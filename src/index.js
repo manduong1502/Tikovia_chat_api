@@ -64,6 +64,46 @@ io.on('connection', (socket) => {
     console.log(`Người dùng ${userId} kết nối thông qua socket ${socket.id}`);
   });
 
+  // Lắng nghe và đồng bộ thiết bị nhận thông báo đẩy qua Socket (Bỏ qua HTTP POST bị chặn bởi WAF/AdBlock)
+  socket.on('sync-push-subscription', async ({ subscription }, callback) => {
+    const userId = currentUserId;
+    if (!userId) {
+      if (callback) callback({ success: false, error: 'Chưa đăng nhập socket' });
+      return;
+    }
+
+    if (!subscription || !subscription.endpoint) {
+      if (callback) callback({ success: false, error: 'Dữ liệu push token không hợp lệ' });
+      return;
+    }
+
+    try {
+      const keysP256dh = subscription.keys?.p256dh || '';
+      const keysAuth = subscription.keys?.auth || '';
+
+      const saved = await prisma.pushSubscription.upsert({
+        where: { endpoint: subscription.endpoint },
+        update: {
+          userId,
+          keysP256dh,
+          keysAuth
+        },
+        create: {
+          userId,
+          endpoint: subscription.endpoint,
+          keysP256dh,
+          keysAuth
+        }
+      });
+
+      console.log(`[Socket.io] Đồng bộ thiết bị đẩy thành công cho user ${userId}`);
+      if (callback) callback({ success: true, saved });
+    } catch (error) {
+      console.error('Lỗi lưu đăng ký thông báo đẩy qua socket:', error);
+      if (callback) callback({ success: false, error: error.message });
+    }
+  });
+
   // Người dùng tham gia vào phòng chat của cuộc hội thoại
   socket.on('join-conversation', (conversationId) => {
     socket.join(conversationId);
