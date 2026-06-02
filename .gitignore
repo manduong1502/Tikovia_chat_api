@@ -11,3 +11,4 @@ uploads/*
 npm-debug.log*
 .vscode/
 .DS_Store
+vapid.json

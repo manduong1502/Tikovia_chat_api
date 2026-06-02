@@ -9,6 +9,7 @@ const fs = require('fs');
 const prisma = require('./db');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chat');
+const { sendNotificationHelper } = require('./controllers/pushController');
 
 const app = express();
 const server = http.createServer(app);
@@ -129,6 +130,39 @@ io.on('connection', (socket) => {
       
       // Đồng thời cập nhật danh sách hội thoại cho các client khác
       io.emit('conversation-updated', { conversationId });
+
+      // Tìm thành viên khác trong cuộc hội thoại để gửi push notification
+      const conv = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: { members: { include: { user: true } } }
+      });
+
+      if (conv) {
+        const senderName = newMessage.sender?.displayName || 'Người dùng';
+        const isGroupMsg = conv.isGroup;
+        const pushTitle = isGroupMsg ? `${conv.name} (${senderName})` : senderName;
+        
+        let pushBody = '';
+        if (type === 'text') pushBody = content;
+        else if (type === 'image') pushBody = '📷 [Hình ảnh]';
+        else if (type === 'file') pushBody = '📁 [Tài liệu]';
+        else if (type === 'voice') pushBody = '🎙️ [Tin nhắn thoại]';
+        else if (type === 'location') pushBody = '📍 [Vị trí]';
+        else if (type === 'sticker') pushBody = '✨ [Sticker]';
+        else if (type === 'reminder') pushBody = '⏰ [Nhắc hẹn]';
+        else pushBody = 'Bạn có tin nhắn mới';
+
+        const pushPayload = {
+          title: pushTitle,
+          body: pushBody,
+          url: '/'
+        };
+
+        const otherMembers = conv.members.filter(m => m.userId !== senderId);
+        otherMembers.forEach(member => {
+          sendNotificationHelper(member.userId, pushPayload);
+        });
+      }
 
     } catch (error) {
       console.error('Lỗi khi gửi tin nhắn qua socket:', error);
@@ -285,7 +319,14 @@ io.on('connection', (socket) => {
         isVideo
       });
     } else {
-      socket.emit('call-failed', { reason: 'Người dùng này đang ngoại tuyến' });
+      // Gửi push notification báo cuộc gọi lỡ để đánh thức thiết bị di động
+      const callType = isVideo ? 'cuộc gọi video' : 'cuộc gọi thoại';
+      sendNotificationHelper(userToCall, {
+        title: '📞 Cuộc gọi đến',
+        body: `${callerName} đang gọi ${callType} cho bạn...`,
+        url: '/'
+      });
+      socket.emit('call-failed', { reason: 'Người dùng này đang ngoại tuyến (Đã gửi thông báo đẩy)' });
     }
   });
 

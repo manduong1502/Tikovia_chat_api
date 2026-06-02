@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const chatController = require('../controllers/chatController');
+const pushController = require('../controllers/pushController');
 const verifyToken = require('../middlewares/authMiddleware');
 
 // Cấu hình lưu trữ tệp tin upload
@@ -38,6 +39,10 @@ router.put('/messages/:messageId/pin', chatController.togglePinMessage);
 router.post('/messages/:messageId/delete-for-me', chatController.deleteMessageForMe);
 router.post('/reminders', chatController.createReminder);
 router.get('/conversations/:conversationId/media', chatController.getMediaGallery);
+
+// API thông báo đẩy
+router.get('/push-key', pushController.getPublicKey);
+router.post('/push-subscribe', pushController.subscribe);
 
 // API upload tệp và ảnh
 router.post('/upload', upload.single('file'), (req, res) => {

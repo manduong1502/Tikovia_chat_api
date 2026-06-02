@@ -24,6 +24,7 @@ model User {
   reminders           Reminder[]
   messageReactions    MessageReaction[]
   messageDeletions    MessageDeletion[]
+  pushSubscriptions   PushSubscription[]
 }
 
 model Conversation {
@@ -105,4 +106,14 @@ model MessageDeletion {
   user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([messageId, userId])
+}
+
+model PushSubscription {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint   String   @unique
+  keysP256dh String
+  keysAuth   String
+  createdAt  DateTime @default(now())
 }
