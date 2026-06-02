@@ -35,6 +35,7 @@ router.get('/conversations', chatController.getConversations);
 router.get('/conversations/:conversationId/messages', chatController.getMessages);
 router.post('/conversations/:conversationId/nickname', chatController.setNickname);
 router.put('/messages/:messageId/pin', chatController.togglePinMessage);
+router.post('/messages/:messageId/delete-for-me', chatController.deleteMessageForMe);
 router.post('/reminders', chatController.createReminder);
 router.get('/conversations/:conversationId/media', chatController.getMediaGallery);
 

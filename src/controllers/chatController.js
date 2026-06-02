@@ -118,6 +118,13 @@ async function getConversations(req, res) {
           }
         },
         messages: {
+          where: {
+            deletions: {
+              none: {
+                userId: currentUserId
+              }
+            }
+          },
           orderBy: { createdAt: 'desc' },
           take: 1,
           include: {
@@ -161,7 +168,14 @@ async function getMessages(req, res) {
     }
 
     const messages = await prisma.message.findMany({
-      where: { conversationId },
+      where: {
+        conversationId,
+        deletions: {
+          none: {
+            userId: currentUserId
+          }
+        }
+      },
       include: {
         sender: {
           select: {
@@ -169,6 +183,29 @@ async function getMessages(req, res) {
             displayName: true,
             avatarUrl: true,
             username: true
+          }
+        },
+        replyTo: {
+          include: {
+            sender: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true
+              }
+            }
+          }
+        },
+        reactions: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true
+              }
+            }
           }
         }
       },
@@ -372,6 +409,56 @@ async function getMediaGallery(req, res) {
   }
 }
 
+// Xóa tin nhắn phía tôi
+async function deleteMessageForMe(req, res) {
+  try {
+    const { messageId } = req.params;
+    const currentUserId = req.userId;
+
+    const message = await prisma.message.findUnique({
+      where: { id: messageId }
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: 'Không tìm thấy tin nhắn' });
+    }
+
+    // Kiểm tra xem người dùng có trong cuộc hội thoại của tin nhắn này không
+    const isMember = await prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId: message.conversationId,
+          userId: currentUserId
+        }
+      }
+    });
+
+    if (!isMember) {
+      return res.status(403).json({ error: 'Không có quyền thực hiện thao tác này' });
+    }
+
+    // Thêm bản ghi xóa tin nhắn
+    await prisma.messageDeletion.upsert({
+      where: {
+        messageId_userId: {
+          messageId,
+          userId: currentUserId
+        }
+      },
+      update: {},
+      create: {
+        messageId,
+        userId: currentUserId
+      }
+    });
+
+    res.json({ message: 'Đã xóa tin nhắn đối với bạn', messageId });
+  } catch (error) {
+    console.error('Lỗi xóa tin nhắn phía tôi:', error);
+    res.status(500).json({ error: 'Không thể xóa tin nhắn' });
+  }
+}
+
 module.exports = {
   createConversation,
   getConversations,
@@ -379,5 +466,6 @@ module.exports = {
   setNickname,
   togglePinMessage,
   createReminder,
-  getMediaGallery
+  getMediaGallery,
+  deleteMessageForMe
 };

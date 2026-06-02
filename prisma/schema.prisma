@@ -22,6 +22,8 @@ model User {
   messages            Message[]
   createdConversations Conversation[]
   reminders           Reminder[]
+  messageReactions    MessageReaction[]
+  messageDeletions    MessageDeletion[]
 }
 
 model Conversation {
@@ -50,20 +52,26 @@ model ConversationMember {
 }
 
 model Message {
-  id             String        @id @default(uuid())
+  id             String            @id @default(uuid())
   conversationId String
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   senderId       String?
-  sender         User?         @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  sender         User?             @relation(fields: [senderId], references: [id], onDelete: SetNull)
   type           String // "text", "image", "file", "voice", "location", "sticker", "reminder"
   content        String? // Message body or file link
   metadata       String? // JSON string: {lat, lng, address} or {fileSize, mimeType} or {duration} or {stickerId}
-  isPinned       Boolean       @default(false)
+  isPinned       Boolean           @default(false)
   pinnedBy       String?
   pinnedAt       DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
   reminders      Reminder[]
+  replyToId      String?
+  replyTo        Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]         @relation("MessageReplies")
+  isRecalled     Boolean           @default(false)
+  reactions      MessageReaction[]
+  deletions      MessageDeletion[]
 }
 
 model Reminder {
@@ -76,4 +84,25 @@ model Reminder {
   remindAt  DateTime
   status    String   @default("pending") // "pending", "sent", "cancelled"
   createdAt DateTime @default(now())
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  type      String   // 👍, ❤️, 😂, 😮, 😭, 😡
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+}
+
+model MessageDeletion {
+  messageId String
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
 }

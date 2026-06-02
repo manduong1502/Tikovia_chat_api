@@ -71,7 +71,7 @@ io.on('connection', (socket) => {
 
   // Gửi tin nhắn mới
   socket.on('send-message', async (data) => {
-    const { conversationId, senderId, type, content, metadata } = data;
+    const { conversationId, senderId, type, content, metadata, replyToId } = data;
     try {
       // Lưu tin nhắn vào cơ sở dữ liệu
       const newMessage = await prisma.message.create({
@@ -80,7 +80,8 @@ io.on('connection', (socket) => {
           senderId,
           type,
           content,
-          metadata: metadata ? JSON.stringify(metadata) : null
+          metadata: metadata ? JSON.stringify(metadata) : null,
+          replyToId: replyToId || null
         },
         include: {
           sender: {
@@ -89,6 +90,29 @@ io.on('connection', (socket) => {
               displayName: true,
               avatarUrl: true,
               username: true
+            }
+          },
+          replyTo: {
+            include: {
+              sender: {
+                select: {
+                  id: true,
+                  displayName: true,
+                  username: true
+                }
+              }
+            }
+          },
+          reactions: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  displayName: true,
+                  username: true,
+                  avatarUrl: true
+                }
+              }
             }
           }
         }
@@ -109,6 +133,100 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Lỗi khi gửi tin nhắn qua socket:', error);
       socket.emit('error-response', { error: 'Không thể gửi tin nhắn' });
+    }
+  });
+
+  // Thả / hủy / đổi cảm xúc tin nhắn
+  socket.on('toggle-reaction', async (data) => {
+    const { messageId, userId, type, conversationId } = data;
+    try {
+      const existing = await prisma.messageReaction.findUnique({
+        where: {
+          messageId_userId: {
+            messageId,
+            userId
+          }
+        }
+      });
+
+      if (existing) {
+        if (existing.type === type) {
+          await prisma.messageReaction.delete({
+            where: { id: existing.id }
+          });
+        } else {
+          await prisma.messageReaction.update({
+            where: { id: existing.id },
+            data: { type }
+          });
+        }
+      } else {
+        await prisma.messageReaction.create({
+          data: {
+            messageId,
+            userId,
+            type
+          }
+        });
+      }
+
+      // Lấy danh sách cảm xúc mới nhất của tin nhắn
+      const updatedReactions = await prisma.messageReaction.findMany({
+        where: { messageId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              username: true,
+              avatarUrl: true
+            }
+          }
+        }
+      });
+
+      io.to(conversationId).emit('message-reaction-updated', {
+        messageId,
+        conversationId,
+        reactions: updatedReactions
+      });
+    } catch (e) {
+      console.error('Lỗi socket thả cảm xúc:', e);
+    }
+  });
+
+  // Gỡ / thu hồi tin nhắn
+  socket.on('recall-message', async (data) => {
+    const { messageId, conversationId, userId } = data;
+    try {
+      const msg = await prisma.message.findUnique({
+        where: { id: messageId }
+      });
+
+      if (!msg) return;
+
+      if (msg.senderId !== userId) {
+        return socket.emit('error-response', { error: 'Bạn không có quyền thu hồi tin nhắn này' });
+      }
+
+      await prisma.message.update({
+        where: { id: messageId },
+        data: {
+          isRecalled: true,
+          content: null,
+          metadata: null,
+          isPinned: false,
+          pinnedBy: null,
+          pinnedAt: null
+        }
+      });
+
+      io.to(conversationId).emit('message-recalled', {
+        messageId,
+        conversationId
+      });
+    } catch (e) {
+      console.error('Lỗi socket thu hồi tin nhắn:', e);
     }
   });
 
