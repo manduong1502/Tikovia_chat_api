@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Cài đặt OpenSSL và libc6-compat cần cho Prisma hoạt động trên Alpine Linux
+RUN apk add --no-cache openssl libc6-compat
+
 WORKDIR /app
 
 COPY package*.json ./
