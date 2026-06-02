@@ -21,9 +21,9 @@ if (!vapidKeys) {
   console.log('=== KHOÁ VAPID MỚI ĐÃ ĐƯỢC TẠO VÀ LƯU VÀO VAPID.JSON ===');
 }
 
-// Thiết lập cấu hình web-push
+// Thiết lập cấu hình web-push (Dùng email với tên miền thật để Google/Apple không từ chối)
 webpush.setVapidDetails(
-  'mailto:support@chattikovia.local',
+  'mailto:admin@tikovia.vn',
   vapidKeys.publicKey,
   vapidKeys.privateKey
 );
