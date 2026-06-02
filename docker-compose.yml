@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  chattikovia-api:
+    build: .
+    container_name: tiko-chattikovia-api
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - chattikovia_data:/app/prisma
+      - chattikovia_uploads:/app/uploads
+    environment:
+      DATABASE_URL: "file:./dev.db"
+      JWT_SECRET: "chattikovia_super_secret_key_12345_change_me"
+      PORT: "5000"
+      NODE_ENV: "production"
+    command: sh -c "npx prisma db push && npm run start"
+
+volumes:
+  chattikovia_data:
+  chattikovia_uploads:
