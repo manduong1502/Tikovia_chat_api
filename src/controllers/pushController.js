@@ -88,6 +88,7 @@ const sendNotificationHelper = async (userId, payload) => {
       where: { userId }
     });
 
+    console.log(`[Push Notification] Bắt đầu gửi push. Tìm thấy ${subscriptions.length} thiết bị đăng ký cho user ${userId}`);
     if (subscriptions.length === 0) return;
 
     const payloadString = JSON.stringify(payload);
@@ -101,14 +102,18 @@ const sendNotificationHelper = async (userId, payload) => {
         }
       };
 
+      console.log(`[Push Notification] Đang gửi tới endpoint: ${sub.endpoint.substring(0, 45)}...`);
       return webpush.sendNotification(pushSubscription, payloadString)
+        .then(() => {
+          console.log(`[Push Notification] Gửi thành công tới thiết bị của user ${userId}`);
+        })
         .catch(async (err) => {
           // Nếu subscription không còn hiệu lực (410 Gone hoặc 404), xóa khỏi DB
           if (err.statusCode === 410 || err.statusCode === 404) {
             console.log(`Xoá subscription đã hết hạn cho user ${userId}:`, sub.endpoint);
             await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
           } else {
-            console.error(`Lỗi gửi push notification cho endpoint ${sub.endpoint}:`, err);
+            console.error(`[Push Notification] Lỗi gửi push tới endpoint cho user ${userId}:`, err.message || err);
           }
         });
     });
