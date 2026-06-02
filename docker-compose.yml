@@ -8,10 +8,10 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - chattikovia_data:/app/prisma
+      - chattikovia_data:/app/db
       - chattikovia_uploads:/app/uploads
     environment:
-      DATABASE_URL: "file:./dev.db"
+      DATABASE_URL: "file:/app/db/dev.db"
       JWT_SECRET: "chattikovia_super_secret_key_12345_change_me"
       PORT: "5000"
       NODE_ENV: "production"
