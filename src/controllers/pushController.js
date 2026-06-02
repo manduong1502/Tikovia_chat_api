@@ -36,19 +36,31 @@ const getPublicKey = (req, res) => {
 // API đăng ký thiết bị nhận thông báo đẩy
 const subscribe = async (req, res) => {
   const userId = req.user.id;
-  const { subscription } = req.body;
+  const { subscription, data } = req.body;
 
-  if (!subscription || !subscription.endpoint) {
+  let finalSubscription = subscription;
+
+  // Giải mã dữ liệu base64 nếu client gửi dạng obfuscated để vượt qua Cloudflare WAF
+  if (data) {
+    try {
+      const decodedString = Buffer.from(data, 'base64').toString('utf8');
+      finalSubscription = JSON.parse(decodedString);
+    } catch (err) {
+      return res.status(400).json({ error: 'Dữ liệu mã hoá không hợp lệ' });
+    }
+  }
+
+  if (!finalSubscription || !finalSubscription.endpoint) {
     return res.status(400).json({ error: 'Dữ liệu đăng ký không hợp lệ' });
   }
 
   try {
-    const keysP256dh = subscription.keys?.p256dh || '';
-    const keysAuth = subscription.keys?.auth || '';
+    const keysP256dh = finalSubscription.keys?.p256dh || '';
+    const keysAuth = finalSubscription.keys?.auth || '';
 
     // Lưu hoặc cập nhật subscription
     const saved = await prisma.pushSubscription.upsert({
-      where: { endpoint: subscription.endpoint },
+      where: { endpoint: finalSubscription.endpoint },
       update: {
         userId,
         keysP256dh,
@@ -56,7 +68,7 @@ const subscribe = async (req, res) => {
       },
       create: {
         userId,
-        endpoint: subscription.endpoint,
+        endpoint: finalSubscription.endpoint,
         keysP256dh,
         keysAuth
       }
