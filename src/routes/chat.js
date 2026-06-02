@@ -40,9 +40,9 @@ router.post('/messages/:messageId/delete-for-me', chatController.deleteMessageFo
 router.post('/reminders', chatController.createReminder);
 router.get('/conversations/:conversationId/media', chatController.getMediaGallery);
 
-// API thông báo đẩy
-router.get('/push-key', pushController.getPublicKey);
-router.post('/push-subscribe', pushController.subscribe);
+// API thông báo đẩy (Đổi tên để tránh bị các bộ lọc quảng cáo/AdBlock chặn)
+router.get('/device-key', pushController.getPublicKey);
+router.post('/device-token', pushController.subscribe);
 
 // API upload tệp và ảnh
 router.post('/upload', upload.single('file'), (req, res) => {
