@@ -40,6 +40,9 @@ app.use('/api/chat', chatRoutes);
 // Socket.io connection mapping: userId -> socketId
 const userSocketMap = new Map();
 
+// Cuộc gọi đang hoạt động: receiverId -> { from, callerName, callerAvatar, isVideo }
+const activeCalls = new Map();
+
 io.on('connection', (socket) => {
   console.log('Một client đã kết nối:', socket.id);
   let currentUserId = null;
@@ -62,6 +65,13 @@ io.on('connection', (socket) => {
     }
     
     console.log(`Người dùng ${userId} kết nối thông qua socket ${socket.id}`);
+
+    // KIỂM TRA VÀ GỬI LẠI CUỘC GỌI ĐANG CHỜ (Nếu có)
+    if (activeCalls.has(userId)) {
+      const callData = activeCalls.get(userId);
+      console.log(`[Socket.io] Gửi lại cuộc gọi đang chờ cho người dùng ${userId}`);
+      socket.emit('incoming-call', callData);
+    }
   });
 
   // Lắng nghe và đồng bộ thiết bị nhận thông báo đẩy qua Socket (Bỏ qua HTTP POST bị chặn bởi WAF/AdBlock)
@@ -359,6 +369,24 @@ io.on('connection', (socket) => {
   // --- TÍN HIỆU CUỘC GỌI WEBRTC ---
   socket.on('call-user', (data) => {
     const { userToCall, signalData, from, callerName, callerAvatar, isVideo } = data;
+    
+    // Lưu cuộc gọi đang hoạt động
+    activeCalls.set(userToCall, {
+      signal: signalData,
+      from,
+      callerName,
+      callerAvatar,
+      isVideo
+    });
+
+    // Luôn gửi push notification cuộc gọi để đánh thức thiết bị di động chạy nền
+    const callType = isVideo ? 'cuộc gọi video' : 'cuộc gọi thoại';
+    sendNotificationHelper(userToCall, {
+      title: '📞 Cuộc gọi đến',
+      body: `${callerName} đang gọi ${callType} cho bạn...`,
+      url: '/'
+    });
+
     const recipientSocketId = userSocketMap.get(userToCall);
     if (recipientSocketId) {
       io.to(recipientSocketId).emit('incoming-call', {
@@ -368,15 +396,6 @@ io.on('connection', (socket) => {
         callerAvatar,
         isVideo
       });
-    } else {
-      // Gửi push notification báo cuộc gọi lỡ để đánh thức thiết bị di động
-      const callType = isVideo ? 'cuộc gọi video' : 'cuộc gọi thoại';
-      sendNotificationHelper(userToCall, {
-        title: '📞 Cuộc gọi đến',
-        body: `${callerName} đang gọi ${callType} cho bạn...`,
-        url: '/'
-      });
-      socket.emit('call-failed', { reason: 'Người dùng này đang ngoại tuyến (Đã gửi thông báo đẩy)' });
     }
   });
 
@@ -390,6 +409,15 @@ io.on('connection', (socket) => {
 
   socket.on('end-call', (data) => {
     const { to } = data;
+    
+    // Dọn dẹp cuộc gọi khỏi danh sách hoạt động
+    activeCalls.delete(to);
+    for (const [receiverId, call] of activeCalls.entries()) {
+      if (call.from === to || receiverId === to) {
+        activeCalls.delete(receiverId);
+      }
+    }
+
     const socketId = userSocketMap.get(to);
     if (socketId) {
       io.to(socketId).emit('call-ended-by-peer');
@@ -401,6 +429,20 @@ io.on('connection', (socket) => {
     console.log('Client đã ngắt kết nối:', socket.id);
     if (currentUserId) {
       userSocketMap.delete(currentUserId);
+      
+      // Dọn dẹp các cuộc gọi liên quan đến user ngắt kết nối
+      for (const [receiverId, call] of activeCalls.entries()) {
+        if (call.from === currentUserId || receiverId === currentUserId) {
+          console.log(`[Socket.io] Dọn dẹp cuộc gọi của user ${currentUserId} do ngắt kết nối socket.`);
+          activeCalls.delete(receiverId);
+          
+          const otherId = (call.from === currentUserId) ? receiverId : call.from;
+          const otherSocketId = userSocketMap.get(otherId);
+          if (otherSocketId) {
+            io.to(otherSocketId).emit('call-ended-by-peer');
+          }
+        }
+      }
       
       // Đợi 5 giây trước khi chuyển thành offline đề phòng reload trang hoặc mất kết nối tạm thời
       setTimeout(async () => {
