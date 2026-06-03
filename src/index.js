@@ -199,7 +199,12 @@ io.on('connection', (socket) => {
           title: pushTitle,
           body: pushBody,
           url: '/',
-          conversationId: conversationId
+          conversationId: conversationId,
+          icon: newMessage.sender?.avatarUrl 
+            ? (newMessage.sender.avatarUrl.startsWith('http') 
+                ? newMessage.sender.avatarUrl 
+                : `${process.env.APP_URL || 'https://chat.tikovia.vn'}${newMessage.sender.avatarUrl}`)
+            : 'https://chat.tikovia.vn/pwa-192x192.png'
         };
 
         const otherMembers = conv.members.filter(m => m.userId !== senderId);

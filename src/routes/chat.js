@@ -87,11 +87,19 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       } catch (driveError) {
         console.error('[Upload API] Lỗi tải lên Google Drive, chuyển sang lưu trữ cục bộ:', driveError);
         
-        // Cú pháp Fallback: Di chuyển file từ đệm tạm thời sang thư mục lưu cục bộ
+        // Cú pháp Fallback: Di chuyển file từ đệm tạm thời sang thư mục lưu cục bộ (dùng copy + unlink tránh lỗi cross-device EXDEV trong Docker)
         const localFileName = req.file.filename;
         const localFilePath = path.join(localUploadDir, localFileName);
         
-        fs.renameSync(tempFilePath, localFilePath);
+        try {
+          fs.copyFileSync(tempFilePath, localFilePath);
+          if (fs.existsSync(tempFilePath)) {
+            fs.unlinkSync(tempFilePath);
+          }
+        } catch (copyErr) {
+          console.error('[Upload API] Lỗi sao chép tệp cục bộ fallback:', copyErr);
+          throw copyErr;
+        }
 
         return res.json({
           message: 'Tải lên cục bộ thành công (Lỗi kết nối Google Drive)',
@@ -108,7 +116,15 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       const localFileName = req.file.filename;
       const localFilePath = path.join(localUploadDir, localFileName);
 
-      fs.renameSync(tempFilePath, localFilePath);
+      try {
+        fs.copyFileSync(tempFilePath, localFilePath);
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+        }
+      } catch (copyErr) {
+        console.error('[Upload API] Lỗi sao chép tệp cục bộ khi chưa cấu hình:', copyErr);
+        throw copyErr;
+      }
 
       return res.json({
         message: 'Tải lên cục bộ thành công (Chưa cấu hình Google Drive)',
