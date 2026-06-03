@@ -74,11 +74,12 @@ async function uploadFileToDrive(filePath, fileName, mimeType) {
 
     console.log(`[Google Drive] Đang tải tệp "${fileName}" lên thư mục Drive ID: ${folderId}...`);
     
-    // 1. Thực hiện tải file lên
+    // 1. Thực hiện tải file lên (thêm supportsAllDrives: true để hỗ trợ Shared Drive của công ty)
     const response = await drive.files.create({
       requestBody: fileMetadata,
       media: media,
-      fields: 'id, name, webViewLink, webContentLink'
+      fields: 'id, name, webViewLink, webContentLink',
+      supportsAllDrives: true
     });
 
     const file = response.data;
@@ -92,7 +93,8 @@ async function uploadFileToDrive(filePath, fileName, mimeType) {
         requestBody: {
           role: 'reader',
           type: 'anyone'
-        }
+        },
+        supportsAllDrives: true
       });
       console.log(`[Google Drive] Đã cấp quyền xem công khai cho File ID: ${file.id}`);
     } catch (permError) {

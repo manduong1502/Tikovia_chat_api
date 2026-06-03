@@ -58,7 +58,8 @@ async function testUpload() {
     const response = await drive.files.create({
       requestBody: fileMetadata,
       media: media,
-      fields: 'id, name, webViewLink'
+      fields: 'id, name, webViewLink',
+      supportsAllDrives: true
     });
 
     console.log('✅ KẾT QUẢ: TẢI LÊN THÀNH CÔNG!');
@@ -72,7 +73,8 @@ async function testUpload() {
       requestBody: {
         role: 'reader',
         type: 'anyone'
-      }
+      },
+      supportsAllDrives: true
     });
     console.log('✅ KẾT QUẢ: CẤP QUYỀN ĐỌC CÔNG KHAI THÀNH CÔNG!');
 
