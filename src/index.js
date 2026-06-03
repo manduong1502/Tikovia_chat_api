@@ -447,6 +447,24 @@ io.on('connection', (socket) => {
           }
         }
       }, 5000);
+
+      // Đợi 15 giây đề phòng mất kết nối tạm thời/chạy nền, nếu thực sự offline thì kết thúc cuộc gọi liên quan
+      const disconnectedUserId = currentUserId;
+      setTimeout(() => {
+        if (!userSocketMap.has(disconnectedUserId)) {
+          for (const [receiverId, call] of activeCalls.entries()) {
+            if (call.from === disconnectedUserId || receiverId === disconnectedUserId) {
+              console.log(`[Socket.io] User ${disconnectedUserId} offline quá 15s. Tự động huỷ cuộc gọi giữa ${call.from} và ${receiverId}`);
+              activeCalls.delete(receiverId);
+              const otherUserId = call.from === disconnectedUserId ? receiverId : call.from;
+              const otherSocketId = userSocketMap.get(otherUserId);
+              if (otherSocketId) {
+                io.to(otherSocketId).emit('call-ended-by-peer');
+              }
+            }
+          }
+        }
+      }, 15000);
     }
   });
 });
