@@ -141,7 +141,47 @@ async function uploadFileToDrive(filePath, fileName, mimeType) {
   }
 }
 
+/**
+ * Lấy luồng dữ liệu (stream) của tệp từ Google Drive
+ * @param {string} fileId ID của tệp trên Google Drive
+ * @returns {Promise<{stream: NodeJS.ReadableStream, mimeType: string, size: number}>}
+ */
+async function getFileStreamFromDrive(fileId) {
+  const drive = getDriveClient();
+
+  try {
+    // 1. Lấy metadata của file để biết Content-Type và kích thước file
+    const metaResponse = await drive.files.get({
+      fileId: fileId,
+      fields: 'mimeType, size, name',
+      supportsAllDrives: true
+    });
+
+    const { mimeType, size, name } = metaResponse.data;
+
+    // 2. Lấy stream nội dung file
+    const response = await drive.files.get({
+      fileId: fileId,
+      alt: 'media',
+      supportsAllDrives: true
+    }, {
+      responseType: 'stream'
+    });
+
+    return {
+      stream: response.data,
+      mimeType: mimeType,
+      size: size ? parseInt(size, 10) : null,
+      name: name
+    };
+  } catch (error) {
+    console.error(`[Google Drive] Lỗi khi lấy file stream cho File ID ${fileId}:`, error);
+    throw error;
+  }
+}
+
 module.exports = {
   isDriveConfigured,
-  uploadFileToDrive
+  uploadFileToDrive,
+  getFileStreamFromDrive
 };
