@@ -66,12 +66,13 @@ io.on('connection', (socket) => {
     
     console.log(`Người dùng ${userId} kết nối thông qua socket ${socket.id}`);
 
-    // KIỂM TRA VÀ GỬI LẠI CUỘC GỌI ĐANG CHỜ (Nếu có)
-    if (activeCalls.has(userId)) {
-      const callData = activeCalls.get(userId);
-      console.log(`[Socket.io] Gửi lại cuộc gọi đang chờ cho người dùng ${userId}`);
-      socket.emit('incoming-call', callData);
-    }
+    // Đồng bộ trạng thái cuộc gọi khi kết nối/kết nối lại
+    const hasActiveCall = activeCalls.has(userId);
+    const callData = hasActiveCall ? activeCalls.get(userId) : null;
+    socket.emit('call-status-sync', {
+      hasActiveCall,
+      callData
+    });
   });
 
   // Lắng nghe và đồng bộ thiết bị nhận thông báo đẩy qua Socket (Bỏ qua HTTP POST bị chặn bởi WAF/AdBlock)
@@ -379,12 +380,14 @@ io.on('connection', (socket) => {
       isVideo
     });
 
-    // Luôn gửi push notification cuộc gọi để đánh thức thiết bị di động chạy nền
+    // Luôn gửi push notification cuộc gọi để đánh thức thiết bị di động chạy nền (High Priority)
     const callType = isVideo ? 'cuộc gọi video' : 'cuộc gọi thoại';
     sendNotificationHelper(userToCall, {
       title: '📞 Cuộc gọi đến',
       body: `${callerName} đang gọi ${callType} cho bạn...`,
-      url: '/'
+      url: '/',
+      tag: 'incoming-call',
+      isCall: true
     });
 
     const recipientSocketId = userSocketMap.get(userToCall);
@@ -429,20 +432,6 @@ io.on('connection', (socket) => {
     console.log('Client đã ngắt kết nối:', socket.id);
     if (currentUserId) {
       userSocketMap.delete(currentUserId);
-      
-      // Dọn dẹp các cuộc gọi liên quan đến user ngắt kết nối
-      for (const [receiverId, call] of activeCalls.entries()) {
-        if (call.from === currentUserId || receiverId === currentUserId) {
-          console.log(`[Socket.io] Dọn dẹp cuộc gọi của user ${currentUserId} do ngắt kết nối socket.`);
-          activeCalls.delete(receiverId);
-          
-          const otherId = (call.from === currentUserId) ? receiverId : call.from;
-          const otherSocketId = userSocketMap.get(otherId);
-          if (otherSocketId) {
-            io.to(otherSocketId).emit('call-ended-by-peer');
-          }
-        }
-      }
       
       // Đợi 5 giây trước khi chuyển thành offline đề phòng reload trang hoặc mất kết nối tạm thời
       setTimeout(async () => {
