@@ -12,3 +12,6 @@ npm-debug.log*
 .vscode/
 .DS_Store
 vapid.json
+google-credentials.json
+tikovia-chat-server-*.json
+

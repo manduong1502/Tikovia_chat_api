@@ -7,15 +7,23 @@ const chatController = require('../controllers/chatController');
 const pushController = require('../controllers/pushController');
 const verifyToken = require('../middlewares/authMiddleware');
 
-// Cấu hình lưu trữ tệp tin upload
-const uploadDir = process.env.UPLOAD_DIR || './uploads';
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// Nhập tiện ích Google Drive
+const { isDriveConfigured, uploadFileToDrive } = require('../utils/googleDrive');
+
+// Cấu hình thư mục lưu trữ
+const tempUploadDir = './temp_uploads';
+const localUploadDir = './uploads';
+
+if (!fs.existsSync(tempUploadDir)) {
+  fs.mkdirSync(tempUploadDir, { recursive: true });
+}
+if (!fs.existsSync(localUploadDir)) {
+  fs.mkdirSync(localUploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir);
+    cb(null, tempUploadDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -25,7 +33,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // Giới hạn 50MB
+  limits: { fileSize: 5000 * 1024 * 1024 } // Hỗ trợ tệp lớn tối đa 5GB (không giới hạn thực tế cho chat)
 });
 
 // Các API chat
@@ -44,25 +52,81 @@ router.get('/conversations/:conversationId/media', chatController.getMediaGaller
 router.get('/device-key', pushController.getPublicKey);
 router.post('/device-token', pushController.subscribe);
 
-// API upload tệp và ảnh
-router.post('/upload', upload.single('file'), (req, res) => {
+// API upload tệp và ảnh lên Google Drive (có fallback lưu cục bộ)
+router.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Không tìm thấy tệp để upload' });
     }
-    
-    // Tạo đường dẫn URL để client truy cập
-    const fileUrl = `/uploads/${req.file.filename}`;
-    
-    res.json({
-      message: 'Tải lên thành công',
-      url: fileUrl,
-      fileName: req.file.originalname,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype
-    });
+
+    const tempFilePath = req.file.path;
+    const fileName = req.file.originalname;
+    const mimeType = req.file.mimetype;
+    const fileSize = req.file.size;
+
+    // Kiểm tra xem Google Drive đã cấu hình chưa
+    if (isDriveConfigured()) {
+      try {
+        const driveResult = await uploadFileToDrive(tempFilePath, fileName, mimeType);
+
+        // Xoá file đệm tạm thời trên đĩa cứng server
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+        }
+
+        return res.json({
+          message: 'Tải lên Google Drive thành công',
+          url: driveResult.webContentLink,
+          webViewLink: driveResult.webViewLink,
+          fileName: fileName,
+          fileSize: fileSize,
+          mimeType: mimeType,
+          storageType: 'google_drive',
+          driveId: driveResult.id
+        });
+      } catch (driveError) {
+        console.error('[Upload API] Lỗi tải lên Google Drive, chuyển sang lưu trữ cục bộ:', driveError);
+        
+        // Cú pháp Fallback: Di chuyển file từ đệm tạm thời sang thư mục lưu cục bộ
+        const localFileName = req.file.filename;
+        const localFilePath = path.join(localUploadDir, localFileName);
+        
+        fs.renameSync(tempFilePath, localFilePath);
+
+        return res.json({
+          message: 'Tải lên cục bộ thành công (Lỗi kết nối Google Drive)',
+          url: `/uploads/${localFileName}`,
+          fileName: fileName,
+          fileSize: fileSize,
+          mimeType: mimeType,
+          storageType: 'local'
+        });
+      }
+    } else {
+      // Google Drive chưa được cấu hình, lưu cục bộ
+      console.warn('[Upload API] Google Drive chưa được cấu hình, chuyển sang lưu tệp cục bộ.');
+      const localFileName = req.file.filename;
+      const localFilePath = path.join(localUploadDir, localFileName);
+
+      fs.renameSync(tempFilePath, localFilePath);
+
+      return res.json({
+        message: 'Tải lên cục bộ thành công (Chưa cấu hình Google Drive)',
+        url: `/uploads/${localFileName}`,
+        fileName: fileName,
+        fileSize: fileSize,
+        mimeType: mimeType,
+        storageType: 'local'
+      });
+    }
   } catch (error) {
     console.error('Lỗi upload tệp:', error);
+    // Dọn dẹp tệp tạm nếu có lỗi đột xuất
+    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+    }
     res.status(500).json({ error: 'Lỗi máy chủ khi tải lên tệp' });
   }
 });

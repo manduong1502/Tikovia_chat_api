@@ -112,7 +112,7 @@ io.on('connection', (socket) => {
 
   // Gửi tin nhắn mới
   socket.on('send-message', async (data) => {
-    const { conversationId, senderId, type, content, metadata, replyToId } = data;
+    const { conversationId, senderId, type, content, metadata, replyToId, tempId } = data;
     try {
       // Lưu tin nhắn vào cơ sở dữ liệu
       const newMessage = await prisma.message.create({
@@ -165,8 +165,11 @@ io.on('connection', (socket) => {
         data: { updatedAt: new Date() }
       });
 
-      // Phát tin nhắn tới tất cả thành viên trong phòng chat
-      io.to(conversationId).emit('receive-message', newMessage);
+      // Phát tin nhắn tới tất cả thành viên trong phòng chat, kèm theo tempId để đồng bộ Optimistic UI
+      io.to(conversationId).emit('receive-message', {
+        ...newMessage,
+        tempId: tempId || null
+      });
       
       // Đồng thời cập nhật danh sách hội thoại cho các client khác
       io.emit('conversation-updated', { conversationId });
@@ -195,7 +198,8 @@ io.on('connection', (socket) => {
         const pushPayload = {
           title: pushTitle,
           body: pushBody,
-          url: '/'
+          url: '/',
+          conversationId: conversationId
         };
 
         const otherMembers = conv.members.filter(m => m.userId !== senderId);
