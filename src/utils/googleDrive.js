@@ -9,16 +9,17 @@ const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(
 let driveClient = null;
 
 // Hàm kiểm tra xem cấu hình Google Drive có sẵn sàng không
+// Hàm kiểm tra xem cấu hình Google Drive có sẵn sàng không (hỗ trợ cả OAuth2 và Service Account)
 function isDriveConfigured() {
-  // Kiểm tra file JSON credential
-  if (!fs.existsSync(credentialsPath)) {
-    return false;
+  // 1. Kiểm tra cấu hình OAuth2 cho tài khoản Gmail cá nhân
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+    return true;
   }
-  // Kiểm tra Folder ID cấu hình trong env
-  if (!process.env.GOOGLE_DRIVE_FOLDER_ID) {
-    return false;
+  // 2. Kiểm tra cấu hình Service Account cho tài khoản Google Workspace công ty
+  if (fs.existsSync(credentialsPath) && process.env.GOOGLE_DRIVE_FOLDER_ID) {
+    return true;
   }
-  return true;
+  return false;
 }
 
 // Khởi tạo Google Drive Client
@@ -26,10 +27,34 @@ function getDriveClient() {
   if (driveClient) return driveClient;
 
   if (!isDriveConfigured()) {
-    throw new Error('Google Drive chưa được cấu hình. Thiếu file google-credentials.json hoặc GOOGLE_DRIVE_FOLDER_ID trong file .env');
+    throw new Error('Google Drive chưa được cấu hình. Cần file google-credentials.json hoặc cấu hình GOOGLE_REFRESH_TOKEN trong file .env');
   }
 
+  // 1. Nếu có cấu hình OAuth2, sử dụng xác thực tài khoản cá nhân (để không bị giới hạn quota 403)
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+    try {
+      console.log('[Google Drive] Đang khởi tạo kết nối OAuth2 (Gmail cá nhân)...');
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        'http://localhost:3000/oauth2callback'
+      );
+
+      oauth2Client.setCredentials({
+        refresh_token: process.env.GOOGLE_REFRESH_TOKEN
+      });
+
+      driveClient = google.drive({ version: 'v3', auth: oauth2Client });
+      return driveClient;
+    } catch (error) {
+      console.error('[Google Drive] Khởi tạo OAuth2 client thất bại:', error);
+      throw error;
+    }
+  }
+
+  // 2. Fallback sử dụng Service Account
   try {
+    console.log('[Google Drive] Đang khởi tạo kết nối Service Account...');
     const auth = new google.auth.GoogleAuth({
       keyFile: credentialsPath,
       scopes: [
@@ -41,7 +66,7 @@ function getDriveClient() {
     driveClient = google.drive({ version: 'v3', auth });
     return driveClient;
   } catch (error) {
-    console.error('[Google Drive] Khởi tạo Drive client thất bại:', error);
+    console.error('[Google Drive] Khởi tạo Service Account client thất bại:', error);
     throw error;
   }
 }

@@ -22,22 +22,37 @@ if (fs.existsSync(credentialsPath)) {
 console.log('Google Drive Folder ID cấu hình:', process.env.GOOGLE_DRIVE_FOLDER_ID || 'CHƯA CÓ TRONG ENV');
 
 async function testUpload() {
-  if (!fs.existsSync(credentialsPath)) {
-    console.error('LỖI: Không tìm thấy file google-credentials.json!');
-    return;
-  }
   if (!process.env.GOOGLE_DRIVE_FOLDER_ID) {
     console.error('LỖI: Chưa cấu hình GOOGLE_DRIVE_FOLDER_ID trong env!');
     return;
   }
 
-  try {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: credentialsPath,
-      scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.file'],
-    });
+  let drive;
 
-    const drive = google.drive({ version: 'v3', auth });
+  try {
+    if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
+      console.log('Đang thử xác thực bằng OAuth2 (Gmail cá nhân)...');
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        'http://localhost:3000/oauth2callback'
+      );
+      oauth2Client.setCredentials({
+        refresh_token: process.env.GOOGLE_REFRESH_TOKEN
+      });
+      drive = google.drive({ version: 'v3', auth: oauth2Client });
+    } else {
+      console.log('Đang thử xác thực bằng Service Account (Google Workspace)...');
+      if (!fs.existsSync(credentialsPath)) {
+        console.error('LỖI: Không tìm thấy file google-credentials.json hoặc cấu hình OAuth2 trong env!');
+        return;
+      }
+      const auth = new google.auth.GoogleAuth({
+        keyFile: credentialsPath,
+        scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.file'],
+      });
+      drive = google.drive({ version: 'v3', auth });
+    }
 
     // Tạo file test tạm thời
     const testFilePath = path.join(__dirname, './test_file_tmp.txt');
