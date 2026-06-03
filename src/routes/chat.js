@@ -36,6 +36,37 @@ const upload = multer({
   limits: { fileSize: 5000 * 1024 * 1024 } // Hỗ trợ tệp lớn tối đa 5GB (không giới hạn thực tế cho chat)
 });
 
+// API tải tệp từ Google Drive về trình duyệt (Proxy để tránh lỗi cookie bên thứ ba của Google Drive)
+// Đặt TRƯỚC verifyToken để các thẻ <img> và tải file (GET request không chứa header auth) hoạt động bình thường
+router.get('/drive-file/:driveId', async (req, res) => {
+  const { driveId } = req.params;
+
+  if (!isDriveConfigured()) {
+    return res.status(503).json({ error: 'Google Drive chưa được cấu hình' });
+  }
+
+  try {
+    const { stream, mimeType, size } = await getFileStreamFromDrive(driveId);
+
+    // Thiết lập headers
+    res.setHeader('Content-Type', mimeType);
+    if (size) {
+      res.setHeader('Content-Length', size);
+    }
+    // Cấu hình cache cho hiệu năng tốt hơn (cache trong 30 ngày)
+    res.setHeader('Cache-Control', 'public, max-age=2592000');
+
+    // Pipe stream từ Drive về client
+    stream.pipe(res);
+  } catch (error) {
+    console.error(`[Drive Proxy] Lỗi khi tải file ${driveId}:`, error);
+    if (error.code === 404) {
+      return res.status(404).json({ error: 'Không tìm thấy tệp trên Google Drive' });
+    }
+    res.status(500).json({ error: 'Lỗi tải tệp từ Google Drive' });
+  }
+});
+
 // Các API chat
 router.use(verifyToken); // Tất cả API chat yêu cầu đăng nhập
 
@@ -144,36 +175,6 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       } catch (e) {}
     }
     res.status(500).json({ error: 'Lỗi máy chủ khi tải lên tệp' });
-  }
-});
-
-// API tải tệp từ Google Drive về trình duyệt (Proxy để tránh lỗi cookie bên thứ ba của Google Drive)
-router.get('/drive-file/:driveId', async (req, res) => {
-  const { driveId } = req.params;
-
-  if (!isDriveConfigured()) {
-    return res.status(503).json({ error: 'Google Drive chưa được cấu hình' });
-  }
-
-  try {
-    const { stream, mimeType, size } = await getFileStreamFromDrive(driveId);
-
-    // Thiết lập headers
-    res.setHeader('Content-Type', mimeType);
-    if (size) {
-      res.setHeader('Content-Length', size);
-    }
-    // Cấu hình cache cho hiệu năng tốt hơn (cache trong 30 ngày)
-    res.setHeader('Cache-Control', 'public, max-age=2592000');
-
-    // Pipe stream từ Drive về client
-    stream.pipe(res);
-  } catch (error) {
-    console.error(`[Drive Proxy] Lỗi khi tải file ${driveId}:`, error);
-    if (error.code === 404) {
-      return res.status(404).json({ error: 'Không tìm thấy tệp trên Google Drive' });
-    }
-    res.status(500).json({ error: 'Lỗi tải tệp từ Google Drive' });
   }
 });
 
