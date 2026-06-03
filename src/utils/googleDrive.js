@@ -72,6 +72,68 @@ function getDriveClient() {
 }
 
 /**
+ * Tìm hoặc tạo thư mục con bên trong thư mục cha trên Google Drive
+ * @param {object} drive Đối tượng Google Drive client
+ * @param {string} parentId ID của thư mục cha
+ * @param {string} folderName Tên thư mục con cần tìm hoặc tạo
+ * @returns {Promise<string>} ID của thư mục con
+ */
+async function getOrCreateSubfolder(drive, parentId, folderName) {
+  try {
+    // 1. Tìm kiếm thư mục con có tên folderName trong thư mục cha parentId và chưa bị xóa (trashed = false)
+    const query = `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`;
+    const searchResponse = await drive.files.list({
+      q: query,
+      spaces: 'drive',
+      fields: 'files(id, name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+
+    const files = searchResponse.data.files;
+    if (files && files.length > 0) {
+      console.log(`[Google Drive] Tìm thấy thư mục con "${folderName}" có sẵn, ID: ${files[0].id}`);
+      return files[0].id;
+    }
+
+    // 2. Nếu không tìm thấy, tiến hành tạo mới thư mục con
+    console.log(`[Google Drive] Chưa có thư mục "${folderName}", đang tạo mới bên trong thư mục cha ID: ${parentId}...`);
+    const createResponse = await drive.files.create({
+      requestBody: {
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId]
+      },
+      fields: 'id',
+      supportsAllDrives: true
+    });
+
+    const newFolderId = createResponse.data.id;
+    console.log(`[Google Drive] Đã tạo thư mục con "${folderName}" thành công, ID: ${newFolderId}`);
+    
+    // Cấp quyền đọc công khai cho thư mục này để các file bên trong dễ kế thừa quyền
+    try {
+      await drive.permissions.create({
+        fileId: newFolderId,
+        requestBody: {
+          role: 'reader',
+          type: 'anyone'
+        },
+        supportsAllDrives: true
+      });
+    } catch (permErr) {
+      console.warn(`[Google Drive] Không thể thiết lập quyền chia sẻ công khai cho thư mục ${folderName}:`, permErr.message);
+    }
+
+    return newFolderId;
+  } catch (error) {
+    console.error(`[Google Drive] Lỗi khi tìm/tạo thư mục con "${folderName}":`, error);
+    // Nếu có lỗi xảy ra, trả về luôn parentId làm fallback
+    return parentId;
+  }
+}
+
+/**
  * Tải file từ đĩa cứng server lên Google Drive của công ty
  * @param {string} filePath Đường dẫn tệp tạm trên server
  * @param {string} fileName Tên hiển thị của tệp khi lên Drive
@@ -87,9 +149,16 @@ async function uploadFileToDrive(filePath, fileName, mimeType) {
   }
 
   try {
+    // Xác định thư mục con dựa trên loại tệp (ảnh vs các tệp khác)
+    let targetFolderId = folderId;
+    if (folderId) {
+      const subfolderName = mimeType.startsWith('image/') ? 'Ảnh' : 'Tài liệu & Tệp khác';
+      targetFolderId = await getOrCreateSubfolder(drive, folderId, subfolderName);
+    }
+
     const fileMetadata = {
       name: fileName,
-      parents: folderId ? [folderId] : []
+      parents: targetFolderId ? [targetFolderId] : []
     };
 
     const media = {
@@ -97,7 +166,7 @@ async function uploadFileToDrive(filePath, fileName, mimeType) {
       body: fs.createReadStream(filePath)
     };
 
-    console.log(`[Google Drive] Đang tải tệp "${fileName}" lên thư mục Drive ID: ${folderId}...`);
+    console.log(`[Google Drive] Đang tải tệp "${fileName}" lên thư mục Drive ID: ${targetFolderId}...`);
     
     // 1. Thực hiện tải file lên (thêm supportsAllDrives: true để hỗ trợ Shared Drive của công ty)
     const response = await drive.files.create({
