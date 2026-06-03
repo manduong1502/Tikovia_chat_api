@@ -193,6 +193,7 @@ io.on('connection', (socket) => {
         else if (type === 'location') pushBody = '📍 [Vị trí]';
         else if (type === 'sticker') pushBody = '✨ [Sticker]';
         else if (type === 'reminder') pushBody = '⏰ [Nhắc hẹn]';
+        else if (type === 'call') pushBody = `📞 ${content}`;
         else pushBody = 'Bạn có tin nhắn mới';
 
         const pushPayload = {
