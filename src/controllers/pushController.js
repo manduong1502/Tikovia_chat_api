@@ -3,7 +3,14 @@ const path = require('path');
 const webpush = require('web-push');
 const prisma = require('../db');
 
-const vapidKeysPath = path.join(__dirname, '../../vapid.json');
+let vapidKeysPath = path.join(__dirname, '../../vapid.json');
+const dbDir = path.join(__dirname, '../../db');
+
+// Nếu chạy trong Docker và thư mục volume db tồn tại, lưu khoá VAPID vào đó để tránh bị xoá khi rebuild
+if (fs.existsSync(dbDir)) {
+  vapidKeysPath = path.join(dbDir, 'vapid.json');
+}
+
 let vapidKeys;
 
 // Tải hoặc sinh tự động khoá VAPID
@@ -18,7 +25,7 @@ if (fs.existsSync(vapidKeysPath)) {
 if (!vapidKeys) {
   vapidKeys = webpush.generateVAPIDKeys();
   fs.writeFileSync(vapidKeysPath, JSON.stringify(vapidKeys, null, 2), 'utf8');
-  console.log('=== KHOÁ VAPID MỚI ĐÃ ĐƯỢC TẠO VÀ LƯU VÀO VAPID.JSON ===');
+  console.log(`=== KHOÁ VAPID MỚI ĐÃ ĐƯỢC TẠO VÀ LƯU VÀO: ${vapidKeysPath} ===`);
 }
 
 // Thiết lập cấu hình web-push (Dùng email với tên miền thật để Google/Apple không từ chối)
