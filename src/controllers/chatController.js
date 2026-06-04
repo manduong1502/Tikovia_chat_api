@@ -169,6 +169,7 @@ async function getMessages(req, res) {
 
     const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 50;
     const beforeId = req.query.before;
+    const searchQuery = req.query.search;
 
     const queryOptions = {
       where: {
@@ -177,9 +178,15 @@ async function getMessages(req, res) {
           none: {
             userId: currentUserId
           }
-        }
+        },
+        ...(searchQuery ? {
+          type: 'text',
+          content: {
+            contains: searchQuery
+          }
+        } : {})
       },
-      take: limitVal,
+      take: searchQuery ? 100 : limitVal,
       orderBy: { createdAt: 'desc' },
       include: {
         sender: {
@@ -216,7 +223,7 @@ async function getMessages(req, res) {
       }
     };
 
-    if (beforeId) {
+    if (beforeId && !searchQuery) {
       queryOptions.cursor = { id: beforeId };
       queryOptions.skip = 1;
     }
