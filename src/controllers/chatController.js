@@ -167,7 +167,10 @@ async function getMessages(req, res) {
       return res.status(403).json({ error: 'Bạn không có quyền truy cập cuộc trò chuyện này' });
     }
 
-    const messages = await prisma.message.findMany({
+    const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+    const beforeId = req.query.before;
+
+    const queryOptions = {
       where: {
         conversationId,
         deletions: {
@@ -176,6 +179,8 @@ async function getMessages(req, res) {
           }
         }
       },
+      take: limitVal,
+      orderBy: { createdAt: 'desc' },
       include: {
         sender: {
           select: {
@@ -208,11 +213,18 @@ async function getMessages(req, res) {
             }
           }
         }
-      },
-      orderBy: { createdAt: 'asc' }
-    });
+      }
+    };
 
-    res.json(messages);
+    if (beforeId) {
+      queryOptions.cursor = { id: beforeId };
+      queryOptions.skip = 1;
+    }
+
+    const messages = await prisma.message.findMany(queryOptions);
+
+    // Đảo ngược mảng tin nhắn để trả về theo thứ tự thời gian tăng dần (cũ đến mới) cho client hiển thị
+    res.json(messages.reverse());
   } catch (error) {
     console.error('Lỗi lấy lịch sử tin nhắn:', error);
     res.status(500).json({ error: 'Lỗi tải lịch sử tin nhắn' });

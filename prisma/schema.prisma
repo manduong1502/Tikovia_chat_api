@@ -73,6 +73,8 @@ model Message {
   isRecalled     Boolean           @default(false)
   reactions      MessageReaction[]
   deletions      MessageDeletion[]
+
+  @@index([conversationId, createdAt])
 }
 
 model Reminder {
