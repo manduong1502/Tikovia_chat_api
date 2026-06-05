@@ -50,6 +50,7 @@ io.on('connection', (socket) => {
   // Khi người dùng định danh bản thân sau khi kết nối thành công
   socket.on('register-user', async (userId) => {
     currentUserId = userId;
+    socket.join(`user-${userId}`); // Gia nhập phòng socket theo UserId để nhận tin nhắn real-time
     userSocketMap.set(userId, socket.id);
     
     // Cập nhật trạng thái online trong DB
@@ -176,22 +177,24 @@ io.on('connection', (socket) => {
         data: { updatedAt: new Date() }
       });
 
-      // Phát tin nhắn tới tất cả thành viên trong phòng chat, kèm theo tempId để đồng bộ Optimistic UI
-      io.to(conversationId).emit('receive-message', {
-        ...newMessage,
-        tempId: tempId || null
-      });
-      
-      // Đồng thời cập nhật danh sách hội thoại cho các client khác
-      io.emit('conversation-updated', { conversationId });
-
-      // Tìm thành viên khác trong cuộc hội thoại để gửi push notification
+      // Tìm thành viên trong cuộc hội thoại để gửi real-time socket và push notification
       const conv = await prisma.conversation.findUnique({
         where: { id: conversationId },
         include: { members: { include: { user: true } } }
       });
 
       if (conv) {
+        // Gửi tin nhắn real-time tới mọi thiết bị (phòng user-*) của các thành viên trong nhóm
+        conv.members.forEach(member => {
+          io.to(`user-${member.userId}`).emit('receive-message', {
+            ...newMessage,
+            tempId: tempId || null
+          });
+        });
+
+        // Đồng thời cập nhật danh sách hội thoại cho các client khác
+        io.emit('conversation-updated', { conversationId });
+
         const senderName = newMessage.sender?.displayName || 'Người dùng';
         const isGroupMsg = conv.isGroup;
         const pushTitle = isGroupMsg ? `${conv.name} (${senderName})` : senderName;
@@ -369,7 +372,7 @@ io.on('connection', (socket) => {
 
   // --- TÍN HIỆU CUỘC GỌI WEBRTC ---
   socket.on('call-user', (data) => {
-    const { userToCall, signalData, from, callerName, callerAvatar, isVideo } = data;
+    const { userToCall, signalData, from, callerName, callerAvatar, isVideo, conversationId } = data;
     
     // Lưu cuộc gọi đang hoạt động
     activeCalls.set(userToCall, {
@@ -377,7 +380,8 @@ io.on('connection', (socket) => {
       from,
       callerName,
       callerAvatar,
-      isVideo
+      isVideo,
+      conversationId
     });
 
     // Luôn gửi push notification cuộc gọi để đánh thức thiết bị di động chạy nền (High Priority)
@@ -387,7 +391,8 @@ io.on('connection', (socket) => {
       body: `${callerName} đang gọi ${callType} cho bạn...`,
       url: '/',
       tag: 'incoming-call',
-      isCall: true
+      isCall: true,
+      conversationId
     });
 
     const recipientSocketId = userSocketMap.get(userToCall);
@@ -397,7 +402,8 @@ io.on('connection', (socket) => {
         from,
         callerName,
         callerAvatar,
-        isVideo
+        isVideo,
+        conversationId
       });
     }
   });
