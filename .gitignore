@@ -14,4 +14,7 @@ npm-debug.log*
 vapid.json
 google-credentials.json
 tikovia-chat-server-*.json
-
+prisma/*.db-shm
+prisma/*.db-wal
+test_file_tmp.txt
+*.txt
