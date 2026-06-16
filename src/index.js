@@ -44,7 +44,8 @@ const uploadDir = process.env.UPLOAD_DIR || './uploads';
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
+
 
 // Kích hoạt Rate Limiting trên các Route API
 app.use('/api/auth', authLimiter, authRoutes);

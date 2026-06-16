@@ -134,7 +134,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
         return res.json({
           message: 'Tải lên cục bộ thành công (Lỗi kết nối Google Drive)',
-          url: `/uploads/${localFileName}`,
+          url: `/api/uploads/${localFileName}`,
           fileName: fileName,
           fileSize: fileSize,
           mimeType: mimeType,
@@ -159,7 +159,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
       return res.json({
         message: 'Tải lên cục bộ thành công (Chưa cấu hình Google Drive)',
-        url: `/uploads/${localFileName}`,
+        url: `/api/uploads/${localFileName}`,
         fileName: fileName,
         fileSize: fileSize,
         mimeType: mimeType,
