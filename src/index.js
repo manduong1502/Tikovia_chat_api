@@ -585,7 +585,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', async () => {
     console.log('Client đã ngắt kết nối:', socket.id);
     if (currentUserId) {
-      userSocketMap.delete(currentUserId);
+      if (userSocketMap.get(currentUserId) === socket.id) {
+        userSocketMap.delete(currentUserId);
+      }
       
       // Đợi 5 giây trước khi chuyển thành offline đề phòng reload trang hoặc mất kết nối tạm thời
       setTimeout(async () => {
