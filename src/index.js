@@ -73,12 +73,26 @@ io.use((socket, next) => {
 });
 
 io.on('connection', (socket) => {
-  const currentUserId = socket.userId;
-  console.log(`Một client đã xác thực kết nối socket: ${socket.id} (User: ${currentUserId})`);
+  const { contextStore } = require('./utils/context');
+  
+  // Ghi đè socket.on để các listener sự kiện Socket.io chạy trong AsyncLocalStorage context
+  const originalOn = socket.on;
+  socket.on = function (event, listener) {
+    return originalOn.call(this, event, (...args) => {
+      contextStore.run({ userId: socket.userId }, () => {
+        listener.apply(this, args);
+      });
+    });
+  };
 
-  // Tự động gia nhập phòng riêng của User đó để nhận thông báo real-time
-  socket.join(`user-${currentUserId}`);
-  userSocketMap.set(currentUserId, socket.id);
+  // Chạy toàn bộ tiến trình kết nối trong AsyncLocalStorage context
+  contextStore.run({ userId: socket.userId }, () => {
+    const currentUserId = socket.userId;
+    console.log(`Một client đã xác thực kết nối socket: ${socket.id} (User: ${currentUserId})`);
+
+    // Tự động gia nhập phòng riêng của User đó để nhận thông báo real-time
+    socket.join(`user-${currentUserId}`);
+    userSocketMap.set(currentUserId, socket.id);
 
   // Cập nhật trạng thái online trong DB
   prisma.user.update({
@@ -622,6 +636,7 @@ io.on('connection', (socket) => {
         }
       }, 15000);
     }
+  });
   });
 });
 

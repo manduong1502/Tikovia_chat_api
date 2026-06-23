@@ -18,7 +18,11 @@ function verifyToken(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.userId = decoded.userId;
-    next();
+    
+    const { contextStore } = require('../utils/context');
+    contextStore.run({ userId: decoded.userId }, () => {
+      next();
+    });
   } catch (error) {
     console.error('Token verification error:', error);
     return res.status(403).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ' });
