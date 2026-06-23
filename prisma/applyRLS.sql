@@ -7,24 +7,38 @@ ALTER TABLE "Message" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Reminder" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "PushSubscription" ENABLE ROW LEVEL SECURITY;
 
--- Dọn dẹp các policy cũ nếu có để tránh lỗi trùng lặp
+-- Dọn dẹp các policy và function cũ nếu có để tránh lỗi trùng lặp
 DROP POLICY IF EXISTS member_access ON "ConversationMember";
 DROP POLICY IF EXISTS message_access ON "Message";
 DROP POLICY IF EXISTS reminder_access ON "Reminder";
 DROP POLICY IF EXISTS push_subscription_access ON "PushSubscription";
+DROP FUNCTION IF EXISTS check_conversation_member;
 
--- 2. Thiết lập chính sách bảo mật dựa trên biến môi trường cục bộ 'app.current_user_id'
+-- 2. Tạo hàm kiểm tra thành viên với SECURITY DEFINER để phá vỡ đệ quy vô hạn (Infinite Recursion)
+-- Hàm này sẽ chạy dưới quyền của Owner (thường là superuser/bypassrls) để đọc bảng ConversationMember mà không kích hoạt RLS.
+CREATE OR REPLACE FUNCTION check_conversation_member(conv_id text, user_id text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM "ConversationMember"
+    WHERE "conversationId" = conv_id AND "userId" = user_id
+  );
+END;
+$$;
+
+-- 3. Thiết lập chính sách bảo mật (Policies) dựa trên biến môi trường cục bộ 'app.current_user_id'
 
 -- CHÍNH SÁCH BẢNG ConversationMember (Thành viên cuộc trò chuyện):
--- Cho phép thao tác nếu bản ghi đó thuộc về chính mình, hoặc mình nằm trong nhóm chat đó.
+-- Cho phép thao tác nếu bản ghi đó thuộc về chính mình, hoặc mình nằm trong nhóm chat đó (sử dụng hàm check_conversation_member để tránh đệ quy).
 CREATE POLICY member_access ON "ConversationMember"
   FOR ALL
   USING (
     "userId" = current_setting('app.current_user_id', true)
-    OR "conversationId" IN (
-      SELECT "conversationId" FROM "ConversationMember" 
-      WHERE "userId" = current_setting('app.current_user_id', true)
-    )
+    OR check_conversation_member("conversationId", current_setting('app.current_user_id', true))
   );
 
 -- CHÍNH SÁCH BẢNG Message (Tin nhắn):
@@ -32,10 +46,7 @@ CREATE POLICY member_access ON "ConversationMember"
 CREATE POLICY message_access ON "Message"
   FOR ALL
   USING (
-    "conversationId" IN (
-      SELECT "conversationId" FROM "ConversationMember" 
-      WHERE "userId" = current_setting('app.current_user_id', true)
-    )
+    check_conversation_member("conversationId", current_setting('app.current_user_id', true))
   );
 
 -- CHÍNH SÁCH BẢNG Reminder (Nhắc hẹn):
@@ -44,10 +55,10 @@ CREATE POLICY reminder_access ON "Reminder"
   FOR ALL
   USING (
     "creatorId" = current_setting('app.current_user_id', true)
-    OR "messageId" IN (
-      SELECT m.id FROM "Message" m
-      INNER JOIN "ConversationMember" cm ON m."conversationId" = cm."conversationId"
-      WHERE cm."userId" = current_setting('app.current_user_id', true)
+    OR EXISTS (
+      SELECT 1 FROM "Message" m
+      WHERE m.id = "Reminder"."messageId"
+      AND check_conversation_member(m."conversationId", current_setting('app.current_user_id', true))
     )
   );
 
