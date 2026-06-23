@@ -1,22 +1,33 @@
 version: '3.8'
 
 services:
+  chattikovia-redis:
+    image: redis:alpine
+    container_name: tiko-chattikovia-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - chattikovia_redis_data:/data
+
   chattikovia-api:
     build: .
     container_name: tiko-chattikovia-api
     restart: always
     ports:
       - "5000:5000"
+    depends_on:
+      - chattikovia-redis
     volumes:
-      - chattikovia_data:/app/db
       - chattikovia_uploads:/app/uploads
     environment:
-      DATABASE_URL: "file:/app/db/dev.db"
-      JWT_SECRET: "chattikovia_super_secret_key_12345_change_me"
+      DATABASE_URL: "${DATABASE_URL}"
+      JWT_SECRET: "${JWT_SECRET}"
       PORT: "5000"
       NODE_ENV: "production"
+      REDIS_URL: "redis://chattikovia-redis:6379"
     command: sh -c "npx prisma db push && npm run start"
 
 volumes:
-  chattikovia_data:
+  chattikovia_redis_data:
   chattikovia_uploads:
