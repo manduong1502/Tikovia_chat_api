@@ -31,9 +31,28 @@ const storage = multer.diskStorage({
   }
 });
 
+// Danh sách các định dạng tệp bị cấm vì lý do an toàn bảo mật (chống XSS và malware)
+const BLOCKED_EXTENSIONS = [
+  '.html', '.htm', '.xhtml',
+  '.js', '.mjs', '.ts', '.jsx', '.tsx',
+  '.svg', // Ngăn XSS qua SVG có chứa script
+  '.php', '.php3', '.php4', '.php5', '.phtml',
+  '.asp', '.aspx', '.jsp', '.jspx', '.pl', '.py', '.rb',
+  '.sh', '.bash', '.bat', '.cmd', '.exe', '.com', '.msi', '.scr', '.vbs', '.wsf', '.lnk'
+];
+
+const fileFilter = (req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (BLOCKED_EXTENSIONS.includes(ext) || !ext) {
+    return cb(new Error('Định dạng tệp tin bị cấm tải lên vì lý do bảo mật.'));
+  }
+  cb(null, true);
+};
+
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 5000 * 1024 * 1024 } // Hỗ trợ tệp lớn tối đa 5GB (không giới hạn thực tế cho chat)
+  fileFilter: fileFilter,
+  limits: { fileSize: 100 * 1024 * 1024 } // Giới hạn kích thước tệp tối đa 100MB để bảo vệ dung lượng đĩa VPS
 });
 
 // API tải tệp từ Google Drive về trình duyệt (Proxy để tránh lỗi cookie bên thứ ba của Google Drive)

@@ -32,6 +32,15 @@ function errorHandler(err, req, res, next) {
     }
   }
 
+  // Lỗi do Multer giới hạn kích thước hoặc định dạng file bị chặn từ fileFilter
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    statusCode = 400;
+    errorMessage = 'Kích thước tệp tải lên vượt quá giới hạn cho phép (tối đa 100MB).';
+  } else if (err.message && err.message.includes('bảo mật')) {
+    statusCode = 400;
+    errorMessage = err.message;
+  }
+
   // Nếu có lỗi JWT
   if (err.name === 'JsonWebTokenError') {
     statusCode = 401;

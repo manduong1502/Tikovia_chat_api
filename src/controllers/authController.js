@@ -13,6 +13,21 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Thiếu thông tin bắt buộc' });
     }
 
+    // Kiểm tra tính hợp lệ và giới hạn độ dài để tránh Spam/DoS và lỗi ký tự lạ
+    const usernameRegex = /^[a-zA-Z0-9_]{3,30}$/;
+    if (!usernameRegex.test(username)) {
+      return res.status(400).json({ error: 'Tên đăng nhập phải từ 3-30 ký tự và chỉ chứa chữ cái, số, hoặc dấu gạch dưới' });
+    }
+
+    if (displayName.length < 2 || displayName.length > 50) {
+      return res.status(400).json({ error: 'Tên hiển thị phải từ 2-50 ký tự' });
+    }
+
+    // Giới hạn độ dài password từ 6 đến 72 ký tự để phòng ngừa băm bcrypt làm nghẽn CPU (Bcrypt DoS)
+    if (password.length < 6 || password.length > 72) {
+      return res.status(400).json({ error: 'Mật khẩu phải từ 6-72 ký tự' });
+    }
+
     const existingUser = await prisma.user.findUnique({ where: { username } });
     if (existingUser) {
       return res.status(400).json({ error: 'Tên đăng nhập đã tồn tại' });
@@ -176,12 +191,20 @@ async function updateProfile(req, res) {
 
     let updatedData = {};
 
-    if (displayName) updatedData.displayName = displayName;
+    if (displayName) {
+      if (displayName.length < 2 || displayName.length > 50) {
+        return res.status(400).json({ error: 'Tên hiển thị phải từ 2-50 ký tự' });
+      }
+      updatedData.displayName = displayName;
+    }
     if (phone !== undefined) updatedData.phone = phone;
     if (avatarUrl) updatedData.avatarUrl = avatarUrl;
 
     // Nếu muốn đổi mật khẩu
     if (password && newPassword) {
+      if (newPassword.length < 6 || newPassword.length > 72) {
+        return res.status(400).json({ error: 'Mật khẩu mới phải từ 6-72 ký tự' });
+      }
       const isMatch = await bcrypt.compare(password, user.passwordHash);
       if (!isMatch) {
         return res.status(400).json({ error: 'Mật khẩu cũ không chính xác' });
