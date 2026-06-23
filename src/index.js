@@ -642,45 +642,48 @@ io.on('connection', (socket) => {
 
 // --- CRON JOB NHẮC HẸN (30 giây quét một lần) ---
 setInterval(async () => {
-  try {
-    const now = new Date();
-    const remindersToTrigger = await prisma.reminder.findMany({
-      where: {
-        remindAt: { lte: now },
-        status: 'pending'
-      },
-      include: {
-        message: {
-          select: {
-            conversationId: true
-          }
+  const { contextStore } = require('./utils/context');
+  contextStore.run({ userId: 'system' }, async () => {
+    try {
+      const now = new Date();
+      const remindersToTrigger = await prisma.reminder.findMany({
+        where: {
+          remindAt: { lte: now },
+          status: 'pending'
         },
-        creator: {
-          select: {
-            displayName: true
+        include: {
+          message: {
+            select: {
+              conversationId: true
+            }
+          },
+          creator: {
+            select: {
+              displayName: true
+            }
           }
         }
+      });
+
+      for (const reminder of remindersToTrigger) {
+        const conversationId = reminder.message.conversationId;
+        io.to(conversationId).emit('reminder-trigger', {
+          id: reminder.id,
+          title: reminder.title,
+          creatorName: reminder.creator.displayName,
+          remindAt: reminder.remindAt
+        });
+
+        await prisma.reminder.update({
+          where: { id: reminder.id },
+          data: { status: 'sent' }
+        });
+        logger.info(`Đã gửi nhắc hẹn: "${reminder.title}" cho cuộc hội thoại ${conversationId}`);
       }
-    });
-
-    for (const reminder of remindersToTrigger) {
-      const conversationId = reminder.message.conversationId;
-      io.to(conversationId).emit('reminder-trigger', {
-        id: reminder.id,
-        title: reminder.title,
-        creatorName: reminder.creator.displayName,
-        remindAt: reminder.remindAt
-      });
-
-      await prisma.reminder.update({
-        where: { id: reminder.id },
-        data: { status: 'sent' }
-      });
-      logger.info(`Đã gửi nhắc hẹn: "${reminder.title}" cho cuộc hội thoại ${conversationId}`);
+    } catch (e) {
+      logger.error('Lỗi quét nhắc hẹn:', e);
     }
-  } catch (e) {
-    logger.error('Lỗi quét nhắc hẹn:', e);
-  }
+  });
 }, 30000);
 
 // Global Error Handler

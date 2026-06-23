@@ -24,11 +24,11 @@
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "prisma": "^5.14.0",
     "socket.io": "^4.7.5",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0",
-    "prisma": "^5.14.0"
+    "nodemon": "^3.1.0"
   }
 }
