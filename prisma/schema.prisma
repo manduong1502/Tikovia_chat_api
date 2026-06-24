@@ -140,4 +140,8 @@ model Task {
   message        Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+
+  @@index([assigneeId])
+  @@index([assignerId])
+  @@index([conversationId])
 }
