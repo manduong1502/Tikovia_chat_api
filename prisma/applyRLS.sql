@@ -14,11 +14,15 @@ ALTER TABLE "Reminder" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "PushSubscription" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "PushSubscription" FORCE ROW LEVEL SECURITY;
 
+ALTER TABLE "Task" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Task" FORCE ROW LEVEL SECURITY;
+
 -- Dọn dẹp các policy và function cũ nếu có để tránh lỗi trùng lặp
 DROP POLICY IF EXISTS member_access ON "ConversationMember";
 DROP POLICY IF EXISTS message_access ON "Message";
 DROP POLICY IF EXISTS reminder_access ON "Reminder";
 DROP POLICY IF EXISTS push_subscription_access ON "PushSubscription";
+DROP POLICY IF EXISTS task_access ON "Task";
 DROP FUNCTION IF EXISTS check_conversation_member;
 
 -- 2. Tạo hàm kiểm tra thành viên với SECURITY DEFINER để phá vỡ đệ quy vô hạn (Infinite Recursion)
@@ -82,4 +86,13 @@ CREATE POLICY push_subscription_access ON "PushSubscription"
   USING (
     current_setting('app.current_user_id', true) = 'system'
     OR "userId" = current_setting('app.current_user_id', true)
+  );
+
+-- CHÍNH SÁCH BẢNG Task (Công việc):
+-- Chỉ thành viên của cuộc trò chuyện chứa công việc đó, hoặc system context mới được truy cập.
+CREATE POLICY task_access ON "Task"
+  FOR ALL
+  USING (
+    current_setting('app.current_user_id', true) = 'system'
+    OR check_conversation_member("conversationId", current_setting('app.current_user_id', true))
   );

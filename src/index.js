@@ -11,6 +11,7 @@ const jwt = require('jsonwebtoken');
 const prisma = require('./db');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chat');
+const taskRoutes = require('./routes/tasks');
 const { sendNotificationHelper } = require('./controllers/pushController');
 const { authLimiter, messageLimiter } = require('./middlewares/rateLimiter');
 const errorHandler = require('./middlewares/errorHandler');
@@ -25,6 +26,7 @@ const io = new Server(server, {
     methods: ['GET', 'POST', 'PUT', 'DELETE']
   }
 });
+app.set('io', io);
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'chattikovia_super_secret_key_12345';
@@ -50,6 +52,7 @@ app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
 // Kích hoạt Rate Limiting trên các Route API
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/chat', messageLimiter, chatRoutes);
+app.use('/api/tasks', taskRoutes);
 
 // Socket.io connection mapping: userId -> socketId
 const userSocketMap = new Map();
