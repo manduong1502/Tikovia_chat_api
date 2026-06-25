@@ -113,9 +113,10 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const fileName = req.file.originalname;
     const mimeType = req.file.mimetype;
     const fileSize = req.file.size;
+    const forceLocal = req.query.local === 'true';
 
-    // Kiểm tra xem Google Drive đã cấu hình chưa
-    if (isDriveConfigured()) {
+    // Kiểm tra xem Google Drive đã cấu hình chưa và không bắt buộc lưu cục bộ
+    if (isDriveConfigured() && !forceLocal) {
       try {
         const driveResult = await uploadFileToDrive(tempFilePath, fileName, mimeType);
 
