@@ -12,6 +12,7 @@ const prisma = require('./db');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chat');
 const taskRoutes = require('./routes/tasks');
+const logRoutes = require('./routes/logs');
 const { sendNotificationHelper } = require('./controllers/pushController');
 const { authLimiter, messageLimiter } = require('./middlewares/rateLimiter');
 const errorHandler = require('./middlewares/errorHandler');
@@ -53,6 +54,7 @@ app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/chat', messageLimiter, chatRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/logs', logRoutes);
 
 // Socket.io connection mapping: userId -> socketId
 const userSocketMap = new Map();
