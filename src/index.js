@@ -13,6 +13,7 @@ const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chat');
 const taskRoutes = require('./routes/tasks');
 const logRoutes = require('./routes/logs');
+const integrationRoutes = require('./routes/integration');
 const { sendNotificationHelper } = require('./controllers/pushController');
 const { authLimiter, messageLimiter } = require('./middlewares/rateLimiter');
 const errorHandler = require('./middlewares/errorHandler');
@@ -55,6 +56,7 @@ app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/chat', messageLimiter, chatRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/logs', logRoutes);
+app.use('/api/integration', integrationRoutes);
 
 // Socket.io connection mapping: userId -> socketId
 const userSocketMap = new Map();
@@ -694,7 +696,44 @@ setInterval(async () => {
 // Global Error Handler
 app.use(errorHandler);
 
+const SYSTEM_USERS = {
+  KHO_DONG_LANH: {
+    id: '00000000-0000-0000-0000-000000000001',
+    username: 'khodonglanh',
+    displayName: 'Kho Đông Lạnh (Chờ nhận)',
+    passwordHash: '$2b$10$tiko_system_account_hash_placeholder_never_logins'
+  },
+  SYSTEM_BOT: {
+    id: '00000000-0000-0000-0000-000000000000',
+    username: 'system_bot',
+    displayName: 'Hệ thống KiotViet',
+    passwordHash: '$2b$10$tiko_system_account_hash_placeholder_never_logins'
+  }
+};
+
+async function seedSystemUsers() {
+  try {
+    for (const [key, userData] of Object.entries(SYSTEM_USERS)) {
+      await prisma.user.upsert({
+        where: { id: userData.id },
+        update: {},
+        create: {
+          id: userData.id,
+          username: userData.username,
+          displayName: userData.displayName,
+          passwordHash: userData.passwordHash,
+          avatarUrl: null
+        }
+      });
+    }
+    logger.info('[System Users] Đã khởi tạo/đồng bộ các tài khoản hệ thống ảo.');
+  } catch (error) {
+    logger.error('Lỗi khi seed tài khoản hệ thống:', error);
+  }
+}
+
 // Khởi chạy server
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   logger.info(`Máy chủ chạy tại cổng ${PORT}`);
+  await seedSystemUsers();
 });

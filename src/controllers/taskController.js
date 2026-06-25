@@ -248,10 +248,17 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Bạn không có quyền thay đổi trạng thái công việc này' });
   }
 
-  // Tiến hành cập nhật trạng thái
+  // Logic tự nhận việc (Self-assigning) khi đơn hàng giao chung cho Kho Đông Lạnh
+  const isSelfAssigning = task.assigneeId === '00000000-0000-0000-0000-000000000001' && currentUserId !== '00000000-0000-0000-0000-000000000001';
+  const updateData = { status };
+  if (isSelfAssigning) {
+    updateData.assigneeId = currentUserId;
+  }
+
+  // Tiến hành cập nhật trạng thái và người được giao nếu tự nhận việc
   const updatedTask = await prisma.task.update({
     where: { id },
-    data: { status },
+    data: updateData,
     include: {
       assignee: { select: { id: true, displayName: true, avatarUrl: true } },
       assigner: { select: { id: true, displayName: true, avatarUrl: true } }
@@ -265,6 +272,10 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
       try {
         const meta = JSON.parse(message.metadata);
         meta.status = status;
+        if (isSelfAssigning) {
+          meta.assigneeId = currentUserId;
+          meta.assigneeName = updatedTask.assignee.displayName;
+        }
         await prisma.message.update({
           where: { id: task.messageId },
           data: { metadata: JSON.stringify(meta) }
@@ -283,7 +294,9 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
         taskId: task.id,
         status,
         conversationId: task.conversationId,
-        updatedBy: currentUserId
+        updatedBy: currentUserId,
+        assigneeId: isSelfAssigning ? currentUserId : undefined,
+        assigneeName: isSelfAssigning ? updatedTask.assignee.displayName : undefined
       });
     });
   }
