@@ -1,4 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
+const { PrismaClient, Prisma } = require('@prisma/client');
 const { contextStore } = require('./utils/context');
 
 const prisma = new PrismaClient();
@@ -18,9 +18,9 @@ const extendedPrisma = prisma.$extends({
           return query(args);
         }
 
-        // Sử dụng instance client hiện tại (this) thay vì prisma global
+        // Sử dụng instance client hiện tại (Prisma.getExtensionContext(this)) thay vì prisma global
         // giúp giữ kết nối của interactive transaction (tx) và tránh lỗi transaction lồng nhau.
-        const client = this;
+        const client = Prisma.getExtensionContext(this);
         const [, result] = await client.$transaction([
           client.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`,
           query(args)
