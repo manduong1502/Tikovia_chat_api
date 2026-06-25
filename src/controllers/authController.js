@@ -171,6 +171,9 @@ async function getCurrentUser(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy người dùng' });
     }
 
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json(user);
   } catch (error) {
     console.error('Lỗi lấy thông tin cá nhân:', error);
