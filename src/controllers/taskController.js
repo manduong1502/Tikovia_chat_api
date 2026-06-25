@@ -304,8 +304,40 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
   res.status(200).json(updatedTask);
 });
 
+// Lấy danh sách công việc của cuộc hội thoại cụ thể
+const getConversationTasks = asyncHandler(async (req, res) => {
+  const { conversationId } = req.params;
+  const currentUserId = req.userId;
+
+  // Xác minh người dùng có thuộc cuộc hội thoại chứa công việc này không
+  const isMember = await prisma.conversationMember.findUnique({
+    where: {
+      conversationId_userId: {
+        conversationId,
+        userId: currentUserId
+      }
+    }
+  });
+
+  if (!isMember) {
+    return res.status(403).json({ error: 'Bạn không có quyền xem danh sách công việc của cuộc trò chuyện này' });
+  }
+
+  const tasks = await prisma.task.findMany({
+    where: { conversationId },
+    include: {
+      assignee: { select: { id: true, displayName: true, avatarUrl: true } },
+      assigner: { select: { id: true, displayName: true, avatarUrl: true } }
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  res.status(200).json(tasks);
+});
+
 module.exports = {
   createTask,
   getTasks,
-  updateTaskStatus
+  updateTaskStatus,
+  getConversationTasks
 };

@@ -7,6 +7,7 @@ router.use(verifyToken);
 
 router.post('/', taskController.createTask);
 router.get('/', taskController.getTasks);
+router.get('/conversation/:conversationId', taskController.getConversationTasks);
 router.put('/:id/status', taskController.updateTaskStatus);
 
 module.exports = router;
