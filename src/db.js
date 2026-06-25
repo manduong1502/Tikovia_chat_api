@@ -18,9 +18,11 @@ const extendedPrisma = prisma.$extends({
           return query(args);
         }
 
-        // Thực thi set_config cục bộ và câu lệnh query trong một transaction để đảm bảo chung kết nối và an toàn RLS
-        const [, result] = await prisma.$transaction([
-          prisma.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`,
+        // Sử dụng instance client hiện tại (this) thay vì prisma global
+        // giúp giữ kết nối của interactive transaction (tx) và tránh lỗi transaction lồng nhau.
+        const client = this;
+        const [, result] = await client.$transaction([
+          client.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`,
           query(args)
         ]);
         return result;
