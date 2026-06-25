@@ -32,7 +32,29 @@ router.post('/tasks/system-create', verifySystemKey, async (req, res) => {
       }
     });
 
-    if (!group) {
+    if (group) {
+      // Đảm bảo các tài khoản hệ thống ảo là thành viên của nhóm để giữ toàn vẹn dữ liệu
+      const systemIds = [
+        '00000000-0000-0000-0000-000000000000', // system_bot
+        '00000000-0000-0000-0000-000000000001'  // khodonglanh
+      ];
+      for (const sysId of systemIds) {
+        await prisma.conversationMember.upsert({
+          where: {
+            conversationId_userId: {
+              conversationId: group.id,
+              userId: sysId
+            }
+          },
+          update: {},
+          create: {
+            conversationId: group.id,
+            userId: sysId,
+            role: 'member'
+          }
+        });
+      }
+    } else {
       logger.info('Không tìm thấy group Kho Đông Lạnh. Đang tự động tạo mới...');
       // Lấy tất cả user hiện có trong DB (lên tới 10 user) để làm thành viên
       const existingUsers = await prisma.user.findMany({ take: 10 });
