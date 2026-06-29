@@ -405,10 +405,13 @@ const getMediaGallery = asyncHandler(async (req, res) => {
         if (msg.metadata) meta = JSON.parse(msg.metadata);
       } catch (e) {}
 
+      const rawFileName = meta.fileName || msg.content.substring(msg.content.lastIndexOf('/') + 1);
+      const cleanFileName = rawFileName.replace(/^\d+-/, '');
+
       files.push({
         id: msg.id,
         url: msg.content,
-        name: msg.content.substring(msg.content.lastIndexOf('/') + 1),
+        name: cleanFileName,
         size: meta.fileSize,
         mimeType: meta.mimeType,
         createdAt: msg.createdAt,
