@@ -477,6 +477,341 @@ const deleteMessageForMe = asyncHandler(async (req, res) => {
   res.json({ message: 'Đã xóa tin nhắn đối với bạn', messageId });
 });
 
+const addGroupMembers = asyncHandler(async (req, res) => {
+  const { conversationId } = req.params;
+  const { memberIds } = req.body; // Array of user IDs to add
+  const currentUserId = req.userId;
+
+  if (!memberIds || !Array.isArray(memberIds) || memberIds.length === 0) {
+    return res.status(400).json({ error: 'Danh sách thành viên không hợp lệ' });
+  }
+
+  // Lấy thông tin nhóm
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: {
+      members: true
+    }
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: 'Không tìm thấy cuộc hội thoại' });
+  }
+
+  if (!conversation.isGroup) {
+    return res.status(400).json({ error: 'Không thể thêm thành viên vào cuộc trò chuyện cá nhân' });
+  }
+
+  // Kiểm tra user hiện tại có phải thành viên nhóm không
+  const isMember = conversation.members.some(m => m.userId === currentUserId);
+  if (!isMember) {
+    return res.status(403).json({ error: 'Bạn không có quyền thực hiện thao tác này' });
+  }
+
+  // Lọc ra các thành viên chưa có trong nhóm
+  const existingUserIds = conversation.members.map(m => m.userId);
+  const newMemberIds = memberIds.filter(id => !existingUserIds.includes(id));
+
+  if (newMemberIds.length === 0) {
+    return res.status(400).json({ error: 'Tất cả thành viên được chọn đã ở trong nhóm' });
+  }
+
+  // Thêm thành viên mới vào DB
+  await prisma.conversationMember.createMany({
+    data: newMemberIds.map(userId => ({
+      conversationId,
+      userId,
+      role: 'member'
+    }))
+  });
+
+  // Lấy tên các thành viên mới
+  const newUsers = await prisma.user.findMany({
+    where: { id: { in: newMemberIds } },
+    select: { displayName: true }
+  });
+  const newNames = newUsers.map(u => u.displayName);
+
+  // Lấy tên người thêm
+  const currentUser = await prisma.user.findUnique({
+    where: { id: currentUserId },
+    select: { displayName: true }
+  });
+
+  // Tạo tin nhắn hệ thống thông báo thêm thành viên
+  const systemContent = `${currentUser.displayName} đã thêm ${newNames.join(', ')} vào nhóm`;
+  const systemMsg = await prisma.message.create({
+    data: {
+      conversationId,
+      senderId: currentUserId,
+      type: 'text',
+      content: systemContent
+    },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          displayName: true,
+          avatarUrl: true,
+          username: true
+        }
+      }
+    }
+  });
+
+  // Cập nhật updatedAt của cuộc hội thoại
+  const updatedConv = await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { updatedAt: new Date() },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+              status: true,
+              lastSeen: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // Gửi real-time socket
+  const io = req.app.get('io');
+  if (io) {
+    // Gửi tin nhắn mới tới toàn bộ thành viên cũ + mới
+    const allMembers = updatedConv.members;
+    allMembers.forEach(member => {
+      io.to(`user-${member.userId}`).emit('receive-message', systemMsg);
+    });
+    // Phát sự kiện cập nhật danh sách cuộc hội thoại
+    io.emit('conversation-updated', { conversationId });
+  }
+
+  res.status(200).json(updatedConv);
+});
+
+const removeGroupMember = asyncHandler(async (req, res) => {
+  const { conversationId, userId } = req.params;
+  const currentUserId = req.userId;
+
+  // Lấy thông tin nhóm
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: {
+      members: true
+    }
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: 'Không tìm thấy cuộc hội thoại' });
+  }
+
+  if (!conversation.isGroup) {
+    return res.status(400).json({ error: 'Thao tác chỉ áp dụng cho nhóm chat' });
+  }
+
+  // Tìm thành viên cần mời ra hoặc tự rời
+  const targetMember = conversation.members.find(m => m.userId === userId);
+  if (!targetMember) {
+    return res.status(400).json({ error: 'Người dùng không phải thành viên nhóm này' });
+  }
+
+  const isSelf = userId === currentUserId;
+  const isCreator = conversation.createdById === currentUserId;
+
+  // Quyền hạn: Chỉ người tạo nhóm được kick người khác, tự rời nhóm thì ai cũng được
+  if (!isSelf && !isCreator) {
+    return res.status(403).json({ error: 'Chỉ Trưởng nhóm mới có quyền xóa thành viên' });
+  }
+
+  // Thực hiện xóa khỏi DB
+  await prisma.conversationMember.delete({
+    where: {
+      conversationId_userId: {
+        conversationId,
+        userId
+      }
+    }
+  });
+
+  // Lấy thông tin người bị mời/rời và người mời
+  const targetUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { displayName: true }
+  });
+  const currentUser = await prisma.user.findUnique({
+    where: { id: currentUserId },
+    select: { displayName: true }
+  });
+
+  // Tạo tin nhắn thông báo rời/bị mời ra khỏi nhóm
+  const systemContent = isSelf
+    ? `${targetUser.displayName} đã rời khỏi nhóm`
+    : `${currentUser.displayName} đã mời ${targetUser.displayName} ra khỏi nhóm`;
+
+  const systemMsg = await prisma.message.create({
+    data: {
+      conversationId,
+      senderId: currentUserId,
+      type: 'text',
+      content: systemContent
+    },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          displayName: true,
+          avatarUrl: true,
+          username: true
+        }
+      }
+    }
+  });
+
+  // Cập nhật updatedAt của cuộc hội thoại
+  const updatedConv = await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { updatedAt: new Date() },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+              status: true,
+              lastSeen: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // Gửi real-time socket
+  const io = req.app.get('io');
+  if (io) {
+    // Gửi tin nhắn mới tới thành viên cũ (kể cả người vừa bị xóa để cập nhật giao diện)
+    const allMemberIds = [userId, ...updatedConv.members.map(m => m.userId)];
+    allMemberIds.forEach(mId => {
+      io.to(`user-${mId}`).emit('receive-message', systemMsg);
+    });
+    // Gửi thông báo người dùng đã bị mời ra khỏi phòng chat
+    io.to(`user-${userId}`).emit('conversation-removed', { conversationId });
+    io.emit('conversation-updated', { conversationId });
+  }
+
+  res.status(200).json(updatedConv);
+});
+
+const updateGroupDetails = asyncHandler(async (req, res) => {
+  const { conversationId } = req.params;
+  const { name, avatarUrl } = req.body;
+  const currentUserId = req.userId;
+
+  // Lấy thông tin nhóm
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: {
+      members: true
+    }
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: 'Không tìm thấy cuộc hội thoại' });
+  }
+
+  if (!conversation.isGroup) {
+    return res.status(400).json({ error: 'Thao tác chỉ áp dụng cho nhóm chat' });
+  }
+
+  // Kiểm tra quyền hạn: Chỉ người tạo nhóm được sửa
+  const isCreator = conversation.createdById === currentUserId;
+  if (!isCreator) {
+    return res.status(403).json({ error: 'Chỉ Trưởng nhóm mới có quyền sửa đổi thông tin nhóm' });
+  }
+
+  // Cập nhật thông tin nhóm
+  const updatedConv = await prisma.conversation.update({
+    where: { id: conversationId },
+    data: {
+      name: name || undefined,
+      avatarUrl: avatarUrl || undefined,
+      updatedAt: new Date()
+    },
+    include: {
+      members: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+              status: true,
+              lastSeen: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // Lấy thông tin người sửa
+  const currentUser = await prisma.user.findUnique({
+    where: { id: currentUserId },
+    select: { displayName: true }
+  });
+
+  // Tạo tin nhắn hệ thống thông báo thay đổi thông tin nhóm
+  let systemContent = `${currentUser.displayName} đã cập nhật thông tin nhóm`;
+  if (name && name !== conversation.name && avatarUrl && avatarUrl !== conversation.avatarUrl) {
+    systemContent = `${currentUser.displayName} đã đổi tên nhóm thành "${name}" và thay đổi ảnh đại diện nhóm`;
+  } else if (name && name !== conversation.name) {
+    systemContent = `${currentUser.displayName} đã đổi tên nhóm thành "${name}"`;
+  } else if (avatarUrl && avatarUrl !== conversation.avatarUrl) {
+    systemContent = `${currentUser.displayName} đã thay đổi ảnh đại diện nhóm`;
+  }
+
+  const systemMsg = await prisma.message.create({
+    data: {
+      conversationId,
+      senderId: currentUserId,
+      type: 'text',
+      content: systemContent
+    },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          displayName: true,
+          avatarUrl: true,
+          username: true
+        }
+      }
+    }
+  });
+
+  // Gửi real-time socket
+  const io = req.app.get('io');
+  if (io) {
+    updatedConv.members.forEach(member => {
+      io.to(`user-${member.userId}`).emit('receive-message', systemMsg);
+    });
+    io.emit('conversation-updated', { conversationId });
+  }
+
+  res.status(200).json(updatedConv);
+});
+
 module.exports = {
   createConversation,
   getConversations,
@@ -485,5 +820,8 @@ module.exports = {
   togglePinMessage,
   createReminder,
   getMediaGallery,
-  deleteMessageForMe
+  deleteMessageForMe,
+  addGroupMembers,
+  removeGroupMember,
+  updateGroupDetails
 };

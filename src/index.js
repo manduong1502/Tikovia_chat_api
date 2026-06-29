@@ -491,6 +491,133 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Thả cảm xúc tin nhắn
+  socket.on('toggle-reaction', async (data) => {
+    const { messageId, type, conversationId } = data;
+    if (!currentUserId) return;
+    try {
+      const isMember = await prisma.conversationMember.findUnique({
+        where: {
+          conversationId_userId: {
+            conversationId,
+            userId: currentUserId
+          }
+        }
+      });
+
+      if (!isMember) return;
+
+      const msg = await prisma.message.findUnique({ where: { id: messageId } });
+      if (!msg || msg.conversationId !== conversationId) return;
+
+      // Tìm xem user đã thả cảm xúc chưa
+      const existingReaction = await prisma.messageReaction.findUnique({
+        where: {
+          messageId_userId: {
+            messageId,
+            userId: currentUserId
+          }
+        }
+      });
+
+      if (existingReaction) {
+        if (existingReaction.type === type) {
+          // Click trùng biểu cảm cũ -> hủy bỏ
+          await prisma.messageReaction.delete({
+            where: {
+              messageId_userId: {
+                messageId,
+                userId: currentUserId
+              }
+            }
+          });
+        } else {
+          // Đổi sang biểu cảm khác
+          await prisma.messageReaction.update({
+            where: {
+              messageId_userId: {
+                messageId,
+                userId: currentUserId
+              }
+            },
+            data: { type }
+          });
+        }
+      } else {
+        // Chưa có -> thêm cảm xúc mới
+        await prisma.messageReaction.create({
+          data: {
+            messageId,
+            userId: currentUserId,
+            type
+          }
+        });
+      }
+
+      // Lấy toàn bộ cảm xúc mới cập nhật của tin nhắn để gửi lại client
+      const updatedReactions = await prisma.messageReaction.findMany({
+        where: { messageId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              username: true,
+              avatarUrl: true
+            }
+          }
+        }
+      });
+
+      io.to(conversationId).emit('message-reaction-updated', {
+        messageId,
+        conversationId,
+        reactions: updatedReactions
+      });
+    } catch (e) {
+      console.error('Lỗi thả cảm xúc tin nhắn:', e);
+    }
+  });
+
+  // Sửa đổi tin nhắn
+  socket.on('edit-message', async (data) => {
+    const { messageId, content, conversationId } = data;
+    if (!currentUserId) return;
+    try {
+      const isMember = await prisma.conversationMember.findUnique({
+        where: {
+          conversationId_userId: {
+            conversationId,
+            userId: currentUserId
+          }
+        }
+      });
+
+      if (!isMember) return;
+
+      const msg = await prisma.message.findUnique({ where: { id: messageId } });
+      if (!msg || msg.conversationId !== conversationId) return;
+
+      // Chỉ người gửi mới được quyền sửa tin nhắn của mình và không được sửa tin đã gỡ/thu hồi
+      if (msg.senderId !== currentUserId || msg.isRecalled) {
+        return socket.emit('error-response', { error: 'Bạn không có quyền sửa tin nhắn này' });
+      }
+
+      await prisma.message.update({
+        where: { id: messageId },
+        data: { content }
+      });
+
+      io.to(conversationId).emit('message-edited', {
+        messageId,
+        conversationId,
+        content
+      });
+    } catch (e) {
+      console.error('Lỗi socket sửa tin nhắn:', e);
+    }
+  });
+
   // Gõ phím tin nhắn (typing indicator)
   socket.on('typing', async (data) => {
     const { conversationId, displayName, isTyping } = data;

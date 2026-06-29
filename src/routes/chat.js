@@ -98,6 +98,11 @@ router.post('/messages/:messageId/delete-for-me', chatController.deleteMessageFo
 router.post('/reminders', chatController.createReminder);
 router.get('/conversations/:conversationId/media', chatController.getMediaGallery);
 
+// API Quản lý Nhóm
+router.post('/conversations/:conversationId/members', chatController.addGroupMembers);
+router.delete('/conversations/:conversationId/members/:userId', chatController.removeGroupMember);
+router.put('/conversations/:conversationId', chatController.updateGroupDetails);
+
 // API thông báo đẩy (Đổi tên để tránh bị các bộ lọc quảng cáo/AdBlock chặn)
 router.get('/device-key', pushController.getPublicKey);
 router.post('/device-token', pushController.subscribe);
