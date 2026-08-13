@@ -20,6 +20,7 @@ services:
       - chattikovia-redis
     volumes:
       - chattikovia_uploads:/app/uploads
+      - chattikovia_sqlite_data:/app/prisma
     env_file:
       - .env
     environment:
@@ -31,3 +32,4 @@ services:
 volumes:
   chattikovia_redis_data:
   chattikovia_uploads:
+  chattikovia_sqlite_data:
