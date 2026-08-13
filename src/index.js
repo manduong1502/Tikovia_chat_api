@@ -42,10 +42,13 @@ app.use(helmet({
 }));
 
 const corsOptions = {
-  origin: config.CORS_ORIGINS,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-system-key'],
-  credentials: true
+  origin: (origin, callback) => {
+    // Đồng bộ origin linh hoạt (echo requesting origin) để tương thích với credentials: true và Cloudflare Tunnel
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-system-key']
 };
 
 app.use(cors(corsOptions));
