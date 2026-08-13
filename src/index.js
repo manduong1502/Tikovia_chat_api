@@ -40,7 +40,16 @@ enableWAL();
 app.use(helmet({
   crossOriginResourcePolicy: false,
 }));
-app.use(cors());
+
+const corsOptions = {
+  origin: config.CORS_ORIGINS,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-system-key'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // Đảm bảo thư mục upload tồn tại và public nó làm thư mục tĩnh
