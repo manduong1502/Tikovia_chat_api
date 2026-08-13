@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'chattikovia_super_secret_key_12345';
+const { JWT_SECRET } = require('../config');
 
 function verifyToken(req, res, next) {
   const authHeader = req.headers['authorization'];

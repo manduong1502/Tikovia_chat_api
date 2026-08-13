@@ -1,8 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../db');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'chattikovia_super_secret_key_12345';
+const { JWT_SECRET } = require('../config');
 
 // Đăng ký người dùng mới
 async function register(req, res) {

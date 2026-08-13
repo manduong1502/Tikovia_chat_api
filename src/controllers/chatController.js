@@ -592,8 +592,10 @@ const addGroupMembers = asyncHandler(async (req, res) => {
     allMembers.forEach(member => {
       io.to(`user-${member.userId}`).emit('receive-message', systemMsg);
     });
-    // Phát sự kiện cập nhật danh sách cuộc hội thoại
-    io.emit('conversation-updated', { conversationId });
+    // Phát sự kiện cập nhật chỉ cho members (bao gồm cả thành viên mới)
+    allMembers.forEach(member => {
+      io.to(`user-${member.userId}`).emit('conversation-updated', { conversationId });
+    });
   }
 
   res.status(200).json(updatedConv);
@@ -709,7 +711,11 @@ const removeGroupMember = asyncHandler(async (req, res) => {
     });
     // Gửi thông báo người dùng đã bị mời ra khỏi phòng chat
     io.to(`user-${userId}`).emit('conversation-removed', { conversationId });
-    io.emit('conversation-updated', { conversationId });
+    // Phát cập nhật chỉ cho members còn lại + người bị xóa
+    const allNotifyIds = [userId, ...updatedConv.members.map(m => m.userId)];
+    allNotifyIds.forEach(mId => {
+      io.to(`user-${mId}`).emit('conversation-updated', { conversationId });
+    });
   }
 
   res.status(200).json(updatedConv);
@@ -809,7 +815,9 @@ const updateGroupDetails = asyncHandler(async (req, res) => {
     updatedConv.members.forEach(member => {
       io.to(`user-${member.userId}`).emit('receive-message', systemMsg);
     });
-    io.emit('conversation-updated', { conversationId });
+    updatedConv.members.forEach(member => {
+      io.to(`user-${member.userId}`).emit('conversation-updated', { conversationId });
+    });
   }
 
   res.status(200).json(updatedConv);

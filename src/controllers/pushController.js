@@ -42,7 +42,7 @@ const getPublicKey = (req, res) => {
 
 // API đăng ký thiết bị nhận thông báo đẩy
 const subscribe = async (req, res) => {
-  const userId = req.user.id;
+  const userId = req.userId;
   const { subscription, data } = req.body;
 
   let finalSubscription = subscription;

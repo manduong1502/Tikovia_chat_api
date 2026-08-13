@@ -174,7 +174,9 @@ router.post('/tasks/system-create', verifySystemKey, async (req, res) => {
         convWithMembers.members.forEach(member => {
           io.to(`user-${member.userId}`).emit('receive-message', result.message);
         });
-        io.emit('conversation-updated', { conversationId: group.id });
+        convWithMembers.members.forEach(member => {
+          io.to(`user-${member.userId}`).emit('conversation-updated', { conversationId: group.id });
+        });
       }
     }
 
