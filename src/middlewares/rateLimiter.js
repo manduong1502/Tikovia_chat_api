@@ -21,19 +21,31 @@ const rateLimit = (options) => {
 
   return async (req, res, next) => {
     // Lấy IP của client đằng sau proxy/reverse proxy
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+    // Phân tách bucket theo từng nhân viên (dựa trên đuôi JWT token) để toàn bộ công ty dùng chung 1 mạng Wi-Fi văn phòng không bị khóa chéo nhau
+    const authHeader = req.headers['authorization'];
+    const userTokenSuffix = authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(-16)
+      : 'anon';
+    const clientIdentifier = options.byIpOnly ? ip : `${ip}:${userTokenSuffix}`;
     
     // Nếu Redis hoạt động, sử dụng Redis
     if (isRedisReady()) {
       try {
-        const routeKey = req.baseUrl || req.path;
-        const redisKey = `ratelimit:${ip}:${routeKey}`;
+        const routeKey = options.keyPrefix || req.baseUrl || req.path;
+        const redisKey = `ratelimit:${routeKey}:${clientIdentifier}`;
         
         const currentCount = await redis.incr(redisKey);
         
         if (currentCount === 1) {
           // Đặt thời gian hết hạn cho key theo mili giây
           await redis.pexpire(redisKey, windowMs);
+        } else if (currentCount % 10 === 0) {
+          // Đảm bảo key không bao giờ bị kẹt vĩnh viễn (TTL = -1) nếu tiến trình gián đoạn giữa incr và pexpire
+          const ttl = await redis.pttl(redisKey);
+          if (ttl === -1) {
+            await redis.pexpire(redisKey, windowMs);
+          }
         }
         
         if (currentCount > max) {
@@ -50,15 +62,15 @@ const rateLimit = (options) => {
     // Logic dự phòng (Fallback): In-Memory Rate Limiting
     const now = Date.now();
 
-    if (!hits.has(ip)) {
-      hits.set(ip, {
+    if (!hits.has(clientIdentifier)) {
+      hits.set(clientIdentifier, {
         count: 1,
         resetTime: now + windowMs
       });
       return next();
     }
 
-    const clientData = hits.get(ip);
+    const clientData = hits.get(clientIdentifier);
 
     if (now > clientData.resetTime) {
       clientData.count = 1;
@@ -76,18 +88,21 @@ const rateLimit = (options) => {
   };
 };
 
-// Route Đăng nhập/Đăng ký: Tối đa 15 yêu cầu trong 5 phút
+// Route Đăng nhập/Đăng ký: Tối đa 20 yêu cầu trong 5 phút trên mỗi IP
 const authLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, 
-  max: 15,
+  max: 20,
+  byIpOnly: true,
+  keyPrefix: 'auth-login',
   message: 'Bạn đã thực hiện quá nhiều yêu cầu đăng nhập/đăng ký. Vui lòng thử lại sau 5 phút.'
 });
 
-// Route gửi tin nhắn/tải tệp: Tối đa 60 yêu cầu trong 1 phút
+// Route API nghiệp vụ (tin nhắn, tìm kiếm, tải tệp): Tối đa 240 yêu cầu trong 1 phút trên mỗi tài khoản
 const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
-  message: 'Tần suất gửi tin nhắn hoặc tải tệp quá nhanh. Vui lòng thử lại sau 1 phút.'
+  max: 240,
+  keyPrefix: 'api-user',
+  message: 'Tần suất thao tác quá nhanh. Vui lòng thử lại sau ít giây.'
 });
 
 module.exports = {

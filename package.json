@@ -1,17 +1,24 @@
 {
   "name": "chattikovia-server",
-  "version": "1.0.0",
-  "description": "Backend Server for ChatTikovia PWA Chat App",
+  "version": "2.0.0",
+  "description": "Backend Server for ChatTikovia PWA Chat App (Local SSD & PostgreSQL Edition)",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "db:init": "npx prisma init",
     "db:migrate": "npx prisma migrate dev",
-    "db:push": "npx prisma db push"
+    "db:push": "npx prisma db push",
+    "db:generate": "npx prisma generate"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "chattikovia",
+    "pwa",
+    "socket.io",
+    "postgresql",
+    "web-push"
+  ],
+  "author": "Tikovia",
   "license": "ISC",
   "dependencies": {
     "@prisma/client": "^5.14.0",
@@ -19,7 +26,6 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "googleapis": "^173.0.0",
     "helmet": "^8.2.0",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.2",

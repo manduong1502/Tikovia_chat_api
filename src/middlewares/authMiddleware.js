@@ -23,8 +23,7 @@ function verifyToken(req, res, next) {
       next();
     });
   } catch (error) {
-    console.error('Token verification error:', error);
-    return res.status(403).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ' });
+    return res.status(401).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ' });
   }
 }
 

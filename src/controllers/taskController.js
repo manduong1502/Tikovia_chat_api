@@ -1,15 +1,21 @@
 const prisma = require('../db');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
+const { sendNotificationHelper } = require('./pushController');
+
+const SYSTEM_WAREHOUSE_ID = '00000000-0000-0000-0000-000000000001';
+const SYSTEM_BOT_ID = '00000000-0000-0000-0000-000000000000';
 
 // Tạo công việc mới
 const createTask = asyncHandler(async (req, res) => {
   const { title, description, assigneeId, dueDate, conversationId } = req.body;
   const assignerId = req.userId;
 
-  if (!title || !assigneeId || !conversationId) {
+  if (!title || !String(title).trim() || !assigneeId || !conversationId) {
     return res.status(400).json({ error: 'Thiếu thông tin công việc bắt buộc' });
   }
+
+  const cleanTitle = String(title).trim();
 
   // 1. Kiểm tra quyền của người giao việc (phải là thành viên phòng chat)
   const isAssignerMember = await prisma.conversationMember.findUnique({
@@ -39,13 +45,12 @@ const createTask = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Người nhận việc không thuộc phòng chat này' });
   }
 
-  // 3. Sử dụng transaction để tạo Task và Message đồng bộ
+  // 3. Sử dụng transaction để tạo Task, Message và cập nhật Conversation đồng bộ
   const result = await prisma.$transaction(async (tx) => {
-    // Tạo Task trước
     const task = await tx.task.create({
       data: {
-        title,
-        description: description || null,
+        title: cleanTitle,
+        description: description ? String(description).trim() : null,
         dueDate: dueDate ? new Date(dueDate) : null,
         status: 'pending',
         assignerId,
@@ -70,16 +75,15 @@ const createTask = asyncHandler(async (req, res) => {
       }
     });
 
-    // Tạo tin nhắn thông báo dạng 'task'
     const message = await tx.message.create({
       data: {
         conversationId,
         senderId: assignerId,
         type: 'task',
-        content: title,
+        content: cleanTitle,
         metadata: JSON.stringify({
           taskId: task.id,
-          title,
+          title: cleanTitle,
           description: description || '',
           assigneeId,
           assigneeName: task.assignee.displayName,
@@ -122,7 +126,6 @@ const createTask = asyncHandler(async (req, res) => {
       }
     });
 
-    // Cập nhật lại Task để lưu liên kết messageId
     const updatedTask = await tx.task.update({
       where: { id: task.id },
       data: { messageId: message.id },
@@ -136,6 +139,11 @@ const createTask = asyncHandler(async (req, res) => {
       }
     });
 
+    await tx.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() }
+    });
+
     return { task: updatedTask, message };
   });
 
@@ -147,24 +155,51 @@ const createTask = asyncHandler(async (req, res) => {
       include: { members: true }
     });
     if (conv) {
-      conv.members.forEach(member => {
+      conv.members.forEach((member) => {
         io.to(`user-${member.userId}`).emit('receive-message', result.message);
-      });
-      conv.members.forEach(member => {
         io.to(`user-${member.userId}`).emit('conversation-updated', { conversationId });
       });
     }
   }
 
+  // 5. Gửi Web Push Notification khẩn cấp tới điện thoại người được giao việc
+  if (assigneeId !== assignerId && assigneeId !== SYSTEM_WAREHOUSE_ID) {
+    sendNotificationHelper(assigneeId, {
+      title: `📋 Công việc mới từ ${result.task.assigner.displayName}`,
+      body: cleanTitle,
+      icon: result.task.assigner.avatarUrl || '/pwa-192x192.png',
+      tag: `task-${result.task.id}`,
+      conversationId,
+      data: {
+        url: '/',
+        conversationId,
+        taskId: result.task.id,
+        type: 'task'
+      }
+    }).catch((err) => logger.error('Lỗi gửi push khi giao việc:', err));
+  }
+
   res.status(201).json(result.task);
 });
 
-// Lấy danh sách công việc của bản thân
+// Lấy danh sách công việc của bản thân (Bao gồm cả đơn hàng Kho Đông Lạnh chưa có người nhận trong các nhóm mình tham gia)
 const getTasks = asyncHandler(async (req, res) => {
   const currentUserId = req.userId;
 
   const assignedToMe = await prisma.task.findMany({
-    where: { assigneeId: currentUserId },
+    where: {
+      OR: [
+        { assigneeId: currentUserId },
+        {
+          assigneeId: SYSTEM_WAREHOUSE_ID,
+          conversation: {
+            members: {
+              some: { userId: currentUserId }
+            }
+          }
+        }
+      ]
+    },
     include: {
       assigner: {
         select: { id: true, displayName: true, avatarUrl: true }
@@ -216,7 +251,7 @@ const getTasks = asyncHandler(async (req, res) => {
   res.status(200).json({ assignedToMe, assignedByMe });
 });
 
-// Cập nhật trạng thái công việc
+// Cập nhật trạng thái công việc (Có kiểm tra chặt chẽ quyền Người giao / Người nhận)
 const updateTaskStatus = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -244,20 +279,34 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Không tìm thấy công việc' });
   }
 
-  // Xác minh người dùng có thuộc cuộc hội thoại chứa công việc này không
-  const isMember = task.conversation.members.some(m => m.userId === currentUserId);
+  const isMember = task.conversation.members.some((m) => m.userId === currentUserId);
   if (!isMember) {
-    return res.status(403).json({ error: 'Bạn không có quyền thay đổi trạng thái công việc này' });
+    return res.status(403).json({ error: 'Bạn không thuộc phòng chat chứa công việc này' });
   }
 
   // Logic tự nhận việc (Self-assigning) khi đơn hàng giao chung cho Kho Đông Lạnh
-  const isSelfAssigning = task.assigneeId === '00000000-0000-0000-0000-000000000001' && currentUserId !== '00000000-0000-0000-0000-000000000001';
+  const isSelfAssigning =
+    task.assigneeId === SYSTEM_WAREHOUSE_ID && currentUserId !== SYSTEM_WAREHOUSE_ID;
+  const isAssigner = task.assignerId === currentUserId;
+  const isAssignee = task.assigneeId === currentUserId;
+
+  if (!isAssigner && !isAssignee && !isSelfAssigning) {
+    return res.status(403).json({
+      error: 'Chỉ người giao việc hoặc người được giao việc mới có quyền cập nhật trạng thái'
+    });
+  }
+
+  if (status === 'cancelled' && !isAssigner) {
+    return res.status(403).json({
+      error: 'Chỉ người giao việc mới có quyền hủy công việc này'
+    });
+  }
+
   const updateData = { status };
   if (isSelfAssigning) {
     updateData.assigneeId = currentUserId;
   }
 
-  // Tiến hành cập nhật trạng thái và người được giao nếu tự nhận việc
   const updatedTask = await prisma.task.update({
     where: { id },
     data: updateData,
@@ -288,10 +337,10 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     }
   }
 
-  // Phát thông báo real-time tới tất cả thành viên trong nhóm để cập nhật UI lập tức
+  // Phát thông báo real-time tới tất cả thành viên trong nhóm
   const io = req.app.get('io');
   if (io) {
-    task.conversation.members.forEach(member => {
+    task.conversation.members.forEach((member) => {
       io.to(`user-${member.userId}`).emit('task-status-updated', {
         taskId: task.id,
         status,
@@ -303,6 +352,28 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     });
   }
 
+  // Gửi Web Push thông báo cho người giao việc khi công việc được hoàn thành
+  if (
+    status === 'done' &&
+    task.assignerId &&
+    task.assignerId !== currentUserId &&
+    task.assignerId !== SYSTEM_BOT_ID
+  ) {
+    sendNotificationHelper(task.assignerId, {
+      title: `✅ Hoàn thành: ${updatedTask.title}`,
+      body: `${updatedTask.assignee.displayName} đã đánh dấu hoàn thành công việc.`,
+      icon: updatedTask.assignee.avatarUrl || '/pwa-192x192.png',
+      tag: `task-${updatedTask.id}`,
+      conversationId: task.conversationId,
+      data: {
+        url: '/',
+        conversationId: task.conversationId,
+        taskId: updatedTask.id,
+        type: 'task'
+      }
+    }).catch((err) => logger.error('Lỗi gửi push hoàn thành công việc:', err));
+  }
+
   res.status(200).json(updatedTask);
 });
 
@@ -311,7 +382,6 @@ const getConversationTasks = asyncHandler(async (req, res) => {
   const { conversationId } = req.params;
   const currentUserId = req.userId;
 
-  // Xác minh người dùng có thuộc cuộc hội thoại chứa công việc này không
   const isMember = await prisma.conversationMember.findUnique({
     where: {
       conversationId_userId: {

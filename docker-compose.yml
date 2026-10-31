@@ -1,14 +1,59 @@
-version: '3.8'
-
 services:
+  chattikovia-postgres:
+    image: postgres:16-alpine
+    container_name: tiko-chattikovia-postgres
+    restart: always
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=768MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "max_connections=100"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chattikovia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chattikovia_pg_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-chattikovia}
+      TZ: "Asia/Ho_Chi_Minh"
+    volumes:
+      - chattikovia_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chattikovia} -d ${POSTGRES_DB:-chattikovia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   chattikovia-redis:
-    image: redis:alpine
+    image: redis:7-alpine
     container_name: tiko-chattikovia-redis
     restart: always
-    ports:
-      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - chattikovia_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   chattikovia-api:
     build: .
@@ -17,19 +62,31 @@ services:
     ports:
       - "5000:5000"
     depends_on:
-      - chattikovia-redis
+      chattikovia-postgres:
+        condition: service_healthy
+      chattikovia-redis:
+        condition: service_healthy
     volumes:
       - chattikovia_uploads:/app/uploads
-      - chattikovia_sqlite_data:/app/prisma
+      - chattikovia_logs:/app/logs
     env_file:
       - .env
     environment:
       PORT: "5000"
       NODE_ENV: "production"
+      UPLOAD_DIR: "/app/uploads"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-chattikovia}:${POSTGRES_PASSWORD:-chattikovia_pg_pass}@chattikovia-postgres:5432/${POSTGRES_DB:-chattikovia}?schema=public"
       REDIS_URL: "redis://chattikovia-redis:6379"
-    command: sh -c "npx prisma db push && (case '$$DATABASE_URL' in postgres*|postgresql*) npx prisma db execute --file prisma/applyRLS.sql || true ;; *) echo 'Skipping RLS policy' ;; esac) && npm run start"
+      TZ: "Asia/Ho_Chi_Minh"
+    command: sh -c "npx prisma db push --accept-data-loss && npx prisma db execute --file prisma/applyRLS.sql --schema prisma/schema.prisma && npm run start"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
+  chattikovia_pg_data:
   chattikovia_redis_data:
   chattikovia_uploads:
-  chattikovia_sqlite_data:
+  chattikovia_logs:

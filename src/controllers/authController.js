@@ -2,6 +2,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../db');
 const { JWT_SECRET } = require('../config');
+const { deleteLocalFile } = require('../utils/storage');
+
+const SYSTEM_USER_IDS = [
+  '00000000-0000-0000-0000-000000000000',
+  '00000000-0000-0000-0000-000000000001'
+];
 
 // Đăng ký người dùng mới
 async function register(req, res) {
@@ -12,7 +18,6 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Thiếu thông tin bắt buộc' });
     }
 
-    // Kiểm tra tính hợp lệ và giới hạn độ dài để tránh Spam/DoS và lỗi ký tự lạ
     const usernameRegex = /^[a-zA-Z0-9_]{3,30}$/;
     if (!usernameRegex.test(username)) {
       return res.status(400).json({ error: 'Tên đăng nhập phải từ 3-30 ký tự và chỉ chứa chữ cái, số, hoặc dấu gạch dưới' });
@@ -22,7 +27,6 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Tên hiển thị phải từ 2-50 ký tự' });
     }
 
-    // Giới hạn độ dài password từ 6 đến 72 ký tự để phòng ngừa băm bcrypt làm nghẽn CPU (Bcrypt DoS)
     if (password.length < 6 || password.length > 72) {
       return res.status(400).json({ error: 'Mật khẩu phải từ 6-72 ký tự' });
     }
@@ -37,14 +41,13 @@ async function register(req, res) {
       data: {
         username,
         passwordHash,
-        displayName,
-        phone,
-        avatarUrl: avatarUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(username)}`,
+        displayName: displayName.trim(),
+        phone: phone ? String(phone).trim() : null,
+        avatarUrl: avatarUrl || null,
         status: 'offline',
       },
     });
 
-    // Tạo token tự động khi đăng ký xong
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
     res.status(201).json({
@@ -75,7 +78,7 @@ async function login(req, res) {
     }
 
     const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) {
+    if (!user || SYSTEM_USER_IDS.includes(user.id)) {
       return res.status(400).json({ error: 'Tài khoản hoặc mật khẩu không đúng' });
     }
 
@@ -84,7 +87,6 @@ async function login(req, res) {
       return res.status(400).json({ error: 'Tài khoản hoặc mật khẩu không đúng' });
     }
 
-    // Cập nhật trạng thái sang online
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: { status: 'online', lastSeen: new Date() }
@@ -110,27 +112,29 @@ async function login(req, res) {
   }
 }
 
-// Tìm kiếm người dùng (để tạo chat / thêm vào nhóm)
+// Tìm kiếm người dùng (để tạo chat / thêm vào nhóm) - Không phân biệt hoa thường trên PostgreSQL
 async function searchUsers(req, res) {
   try {
     const { query } = req.query;
     const currentUserId = req.userId;
 
-    if (!query) {
+    if (!query || !String(query).trim()) {
       return res.json([]);
     }
+
+    const cleanQuery = String(query).trim();
 
     const users = await prisma.user.findMany({
       where: {
         AND: [
           {
             OR: [
-              { username: { contains: query } },
-              { displayName: { contains: query } },
-              { phone: { contains: query } }
+              { username: { contains: cleanQuery, mode: 'insensitive' } },
+              { displayName: { contains: cleanQuery, mode: 'insensitive' } },
+              { phone: { contains: cleanQuery, mode: 'insensitive' } }
             ]
           },
-          { id: { not: currentUserId } } // Loại trừ bản thân
+          { id: { notIn: [currentUserId, ...SYSTEM_USER_IDS] } }
         ]
       },
       select: {
@@ -141,7 +145,7 @@ async function searchUsers(req, res) {
         phone: true,
         status: true
       },
-      take: 10
+      take: 15
     });
 
     res.json(users);
@@ -191,18 +195,23 @@ async function updateProfile(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy người dùng' });
     }
 
-    let updatedData = {};
+    const updatedData = {};
 
     if (displayName) {
-      if (displayName.length < 2 || displayName.length > 50) {
+      const trimmedName = String(displayName).trim();
+      if (trimmedName.length < 2 || trimmedName.length > 50) {
         return res.status(400).json({ error: 'Tên hiển thị phải từ 2-50 ký tự' });
       }
-      updatedData.displayName = displayName;
+      updatedData.displayName = trimmedName;
     }
-    if (phone !== undefined) updatedData.phone = phone;
-    if (avatarUrl) updatedData.avatarUrl = avatarUrl;
+    if (phone !== undefined) updatedData.phone = phone ? String(phone).trim() : null;
+    if (avatarUrl) {
+      if (user.avatarUrl && user.avatarUrl !== avatarUrl) {
+        deleteLocalFile(user.avatarUrl).catch(() => {});
+      }
+      updatedData.avatarUrl = avatarUrl;
+    }
 
-    // Nếu muốn đổi mật khẩu
     if (password && newPassword) {
       if (newPassword.length < 6 || newPassword.length > 72) {
         return res.status(400).json({ error: 'Mật khẩu mới phải từ 6-72 ký tự' });

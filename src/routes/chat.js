@@ -1,97 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
 const chatController = require('../controllers/chatController');
 const pushController = require('../controllers/pushController');
 const verifyToken = require('../middlewares/authMiddleware');
+const { uploadMiddleware } = require('../utils/storage');
+const logger = require('../utils/logger');
 
-// Nhập tiện ích Google Drive
-const { isDriveConfigured, uploadFileToDrive, getFileStreamFromDrive } = require('../utils/googleDrive');
+// Tất cả API chat yêu cầu xác thực JWT
+router.use(verifyToken);
 
-// Cấu hình thư mục lưu trữ
-const tempUploadDir = './temp_uploads';
-const localUploadDir = './uploads';
-
-if (!fs.existsSync(tempUploadDir)) {
-  fs.mkdirSync(tempUploadDir, { recursive: true });
-}
-if (!fs.existsSync(localUploadDir)) {
-  fs.mkdirSync(localUploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, tempUploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-// Danh sách các định dạng tệp bị cấm vì lý do an toàn bảo mật (chống XSS và malware)
-const BLOCKED_EXTENSIONS = [
-  '.html', '.htm', '.xhtml',
-  '.js', '.mjs', '.ts', '.jsx', '.tsx',
-  '.svg', // Ngăn XSS qua SVG có chứa script
-  '.php', '.php3', '.php4', '.php5', '.phtml',
-  '.asp', '.aspx', '.jsp', '.jspx', '.pl', '.py', '.rb',
-  '.sh', '.bash', '.bat', '.cmd', '.exe', '.com', '.msi', '.scr', '.vbs', '.wsf', '.lnk'
-];
-
-const fileFilter = (req, file, cb) => {
-  const ext = path.extname(file.originalname).toLowerCase();
-  if (BLOCKED_EXTENSIONS.includes(ext) || !ext) {
-    return cb(new Error('Định dạng tệp tin bị cấm tải lên vì lý do bảo mật.'));
-  }
-  cb(null, true);
-};
-
-const upload = multer({ 
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: { fileSize: 100 * 1024 * 1024 } // Giới hạn kích thước tệp tối đa 100MB để bảo vệ dung lượng đĩa VPS
-});
-
-// API tải tệp từ Google Drive về trình duyệt (Proxy để tránh lỗi cookie bên thứ ba của Google Drive)
-// Đặt TRƯỚC verifyToken để các thẻ <img> và tải file (GET request không chứa header auth) hoạt động bình thường
-router.get('/drive-file/:driveId', async (req, res) => {
-  const { driveId } = req.params;
-
-  if (!isDriveConfigured()) {
-    return res.status(503).json({ error: 'Google Drive chưa được cấu hình' });
-  }
-
-  try {
-    const { stream, mimeType, size } = await getFileStreamFromDrive(driveId);
-
-    // Thiết lập headers
-    res.setHeader('Content-Type', mimeType);
-    if (size) {
-      res.setHeader('Content-Length', size);
-    }
-    // Cấu hình cache cho hiệu năng tốt hơn (cache trong 30 ngày)
-    res.setHeader('Cache-Control', 'public, max-age=2592000');
-
-    // Pipe stream từ Drive về client
-    stream.pipe(res);
-  } catch (error) {
-    console.error(`[Drive Proxy] Lỗi khi tải file ${driveId}:`, error);
-    if (error.code === 404) {
-      return res.status(404).json({ error: 'Không tìm thấy tệp trên Google Drive' });
-    }
-    res.status(500).json({ error: 'Lỗi tải tệp từ Google Drive' });
-  }
-});
-
-// Các API chat
-router.use(verifyToken); // Tất cả API chat yêu cầu đăng nhập
-
+// API Quản lý Hội thoại & Tin nhắn
 router.post('/conversations', chatController.createConversation);
 router.get('/conversations', chatController.getConversations);
 router.get('/conversations/:conversationId/messages', chatController.getMessages);
+router.post('/conversations/:conversationId/read', chatController.markConversationRead);
+router.put('/conversations/:conversationId/mute', chatController.toggleMuteConversation);
 router.post('/conversations/:conversationId/nickname', chatController.setNickname);
 router.put('/messages/:messageId/pin', chatController.togglePinMessage);
 router.post('/messages/:messageId/delete-for-me', chatController.deleteMessageForMe);
@@ -103,103 +27,50 @@ router.post('/conversations/:conversationId/members', chatController.addGroupMem
 router.delete('/conversations/:conversationId/members/:userId', chatController.removeGroupMember);
 router.put('/conversations/:conversationId', chatController.updateGroupDetails);
 
-// API thông báo đẩy (Đổi tên để tránh bị các bộ lọc quảng cáo/AdBlock chặn)
+// API Thông báo đẩy trên thiết bị di động (Đặt tên tránh bị các bộ lọc AdBlock chặn)
 router.get('/device-key', pushController.getPublicKey);
 router.post('/device-token', pushController.subscribe);
+router.post('/device-test', pushController.testPushNotification);
 
-// API upload tệp và ảnh lên Google Drive (có fallback lưu cục bộ)
-router.post('/upload', upload.single('file'), async (req, res) => {
+// API Upload tệp, ảnh, ghi âm trực tiếp vào ổ cứng SSD của Ubuntu Mini Server
+router.post('/upload', (req, res, next) => {
+  uploadMiddleware.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'Dung lượng tệp vượt quá giới hạn cho phép của máy chủ.' });
+      }
+      return res.status(400).json({ error: err.message || 'Lỗi kiểm tra tệp tải lên.' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'Không tìm thấy tệp để upload' });
+      return res.status(400).json({ error: 'Không tìm thấy tệp để tải lên.' });
     }
 
-    const tempFilePath = req.file.path;
-    const fileName = req.file.originalname;
+    const fileName = req.file.decodedOriginalName || req.file.originalname;
     const mimeType = req.file.mimetype;
     const fileSize = req.file.size;
-    const forceLocal = req.query.local === 'true';
+    const subDir = req._uploadSubDir ? `${req._uploadSubDir}/` : '';
+    const fileUrl = `/api/uploads/${subDir}${req.file.filename}`;
 
-    // Kiểm tra xem Google Drive đã cấu hình chưa và không bắt buộc lưu cục bộ
-    if (isDriveConfigured() && !forceLocal) {
-      try {
-        const driveResult = await uploadFileToDrive(tempFilePath, fileName, mimeType);
-
-        // Xoá file đệm tạm thời trên đĩa cứng server
-        if (fs.existsSync(tempFilePath)) {
-          fs.unlinkSync(tempFilePath);
-        }
-
-        return res.json({
-          message: 'Tải lên Google Drive thành công',
-          url: `/api/chat/drive-file/${driveResult.id}`,
-          webViewLink: driveResult.webViewLink,
-          fileName: fileName,
-          fileSize: fileSize,
-          mimeType: mimeType,
-          storageType: 'google_drive',
-          driveId: driveResult.id
-        });
-      } catch (driveError) {
-        console.error('[Upload API] Lỗi tải lên Google Drive, chuyển sang lưu trữ cục bộ:', driveError);
-        
-        // Cú pháp Fallback: Di chuyển file từ đệm tạm thời sang thư mục lưu cục bộ (dùng copy + unlink tránh lỗi cross-device EXDEV trong Docker)
-        const localFileName = req.file.filename;
-        const localFilePath = path.join(localUploadDir, localFileName);
-        
-        try {
-          fs.copyFileSync(tempFilePath, localFilePath);
-          if (fs.existsSync(tempFilePath)) {
-            fs.unlinkSync(tempFilePath);
-          }
-        } catch (copyErr) {
-          console.error('[Upload API] Lỗi sao chép tệp cục bộ fallback:', copyErr);
-          throw copyErr;
-        }
-
-        return res.json({
-          message: 'Tải lên cục bộ thành công (Lỗi kết nối Google Drive)',
-          url: `/api/uploads/${localFileName}`,
-          fileName: fileName,
-          fileSize: fileSize,
-          mimeType: mimeType,
-          storageType: 'local'
-        });
-      }
-    } else {
-      // Google Drive chưa được cấu hình, lưu cục bộ
-      console.warn('[Upload API] Google Drive chưa được cấu hình, chuyển sang lưu tệp cục bộ.');
-      const localFileName = req.file.filename;
-      const localFilePath = path.join(localUploadDir, localFileName);
-
-      try {
-        fs.copyFileSync(tempFilePath, localFilePath);
-        if (fs.existsSync(tempFilePath)) {
-          fs.unlinkSync(tempFilePath);
-        }
-      } catch (copyErr) {
-        console.error('[Upload API] Lỗi sao chép tệp cục bộ khi chưa cấu hình:', copyErr);
-        throw copyErr;
-      }
-
-      return res.json({
-        message: 'Tải lên cục bộ thành công (Chưa cấu hình Google Drive)',
-        url: `/api/uploads/${localFileName}`,
-        fileName: fileName,
-        fileSize: fileSize,
-        mimeType: mimeType,
-        storageType: 'local'
-      });
-    }
+    return res.json({
+      message: 'Lưu tệp lên ổ cứng máy chủ thành công',
+      url: fileUrl,
+      fileName,
+      fileSize,
+      mimeType,
+      storageType: 'local'
+    });
   } catch (error) {
-    console.error('Lỗi upload tệp:', error);
-    // Dọn dẹp tệp tạm nếu có lỗi đột xuất
+    logger.error('Lỗi upload tệp lên SSD:', error);
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       try {
         fs.unlinkSync(req.file.path);
       } catch (e) {}
     }
-    res.status(500).json({ error: 'Lỗi máy chủ khi tải lên tệp' });
+    return res.status(500).json({ error: 'Lỗi máy chủ khi lưu tệp lên ổ cứng.' });
   }
 });
 
