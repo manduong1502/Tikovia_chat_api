@@ -1,10 +1,15 @@
 #!/bin/bash
 # ==============================================================================
-# KỊCH BẢN SAO LƯU TỰ ĐỘNG (POSTGRESQL 16 + LOCAL SSD UPLOADS) CHO CHATTIKOVIA
+# KỊCH BẢN SAO LƯU TỰ ĐỘNG (POSTGRESQL + LOCAL SSD UPLOADS) CHO CHATTIKOVIA
 # HDSD: Đặt lịch chạy tự động lúc 02:00 sáng mỗi ngày bằng lệnh `crontab -e`:
 # 0 2 * * * /bin/bash /mnt/ssd500/tiko/chattikovia-api/backup.sh >> /var/log/chattikovia-backup.log 2>&1
 # ==============================================================================
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+fi
 
 BACKUP_ROOT="/mnt/ssd500/tiko/backups/chattikovia"
 RETENTION_DAYS=14
@@ -15,9 +20,10 @@ mkdir -p "$BACKUP_ROOT/uploads"
 
 echo "[$(date -Iseconds)] === BẮT ĐẦU SAO LƯU HỆ THỐNG CHATTIKOVIA ==="
 
-# 1. Sao lưu nóng Cơ sở dữ liệu PostgreSQL 16 (Định dạng nén Custom -Fc, Zero-Downtime)
+# 1. Sao lưu nóng Cơ sở dữ liệu PostgreSQL (192.168.1.200:5433)
 DB_DUMP_FILE="$BACKUP_ROOT/db/chattikovia_pg_${TIMESTAMP}.dump"
-docker exec tiko-chattikovia-postgres pg_dump -U "${POSTGRES_USER:-chattikovia}" -d "${POSTGRES_DB:-chattikovia}" -Fc > "$DB_DUMP_FILE"
+PG_URI="${DATABASE_URL%%\?*}"
+docker run --rm postgres:16-alpine pg_dump "$PG_URI" -Fc > "$DB_DUMP_FILE"
 echo "[$(date -Iseconds)] Đã sao lưu PostgreSQL: $DB_DUMP_FILE ($(du -h "$DB_DUMP_FILE" | cut -f1))"
 
 # 2. Sao lưu thư mục tệp đính kèm trên ổ cứng SSD (Container tiko-chattikovia-api:/app/uploads)
