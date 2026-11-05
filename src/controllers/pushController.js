@@ -171,7 +171,7 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
     const isEphemeralCall = Boolean(enrichedPayload.isCall || enrichedPayload.type === 'call-ended');
     const ttl = customOptions.TTL !== undefined ? customOptions.TTL : (isEphemeralCall ? 60 : 86400);
     const urgency = customOptions.urgency || 'high';
-    const topic = buildSafeWebPushTopic(customOptions.topic || enrichedPayload.tag);
+    const topic = customOptions.topic ? buildSafeWebPushTopic(customOptions.topic) : undefined;
 
     const pushOptions = {
       TTL: ttl,
