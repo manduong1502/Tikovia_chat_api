@@ -30,6 +30,7 @@ router.put('/conversations/:conversationId', chatController.updateGroupDetails);
 // API Thông báo đẩy trên thiết bị di động (Đặt tên tránh bị các bộ lọc AdBlock chặn)
 router.get('/device-key', pushController.getPublicKey);
 router.post('/device-token', pushController.subscribe);
+router.post('/device-unsubscribe', pushController.unsubscribe);
 router.post('/device-test', pushController.testPushNotification);
 
 // API Upload tệp, ảnh, ghi âm trực tiếp vào ổ cứng SSD của Ubuntu Mini Server

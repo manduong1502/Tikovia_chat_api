@@ -12,11 +12,16 @@ const persistentVapidPath = path.join(BASE_UPLOAD_DIR, '.vapid.json');
 
 let vapidKeys = null;
 
-// 1. Ưu tiên đọc từ biến môi trường (.env)
-if (config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY) {
+// 1. Ưu tiên đọc từ biến môi trường (.env) nếu hợp lệ (không phải chuỗi mẫu)
+if (
+  config.VAPID_PUBLIC_KEY &&
+  config.VAPID_PRIVATE_KEY &&
+  !config.VAPID_PUBLIC_KEY.includes('your_vapid') &&
+  !config.VAPID_PRIVATE_KEY.includes('your_vapid')
+) {
   vapidKeys = {
-    publicKey: config.VAPID_PUBLIC_KEY,
-    privateKey: config.VAPID_PRIVATE_KEY
+    publicKey: config.VAPID_PUBLIC_KEY.trim(),
+    privateKey: config.VAPID_PRIVATE_KEY.trim()
   };
 }
 
@@ -41,7 +46,21 @@ if (!vapidKeys && fs.existsSync(legacyVapidPath)) {
 // 4. Nếu hoàn toàn chưa có, sinh tự động khoá VAPID mới
 if (!vapidKeys || !vapidKeys.publicKey || !vapidKeys.privateKey) {
   vapidKeys = webpush.generateVAPIDKeys();
-  logger.info(`=== KHOÁ VAPID MỚI ĐÃ ĐƯỢC TẠO ===`);
+  logger.info('=== KHOÁ VAPID MỚI ĐÃ ĐƯỢC TẠO ===');
+}
+
+// Thiết lập cấu hình web-push với email hợp lệ cho Apple APNs và Google FCM
+let safeSubject = String(config.VAPID_SUBJECT || 'mailto:admin@tikovia.vn').trim();
+if (!safeSubject.startsWith('mailto:') && !safeSubject.startsWith('https://')) {
+  safeSubject = `mailto:${safeSubject}`;
+}
+
+try {
+  webpush.setVapidDetails(safeSubject, vapidKeys.publicKey, vapidKeys.privateKey);
+} catch (err) {
+  logger.warn('Khoá VAPID cấu hình không hợp lệ, tự động sinh lại khoá VAPID mới:', err.message);
+  vapidKeys = webpush.generateVAPIDKeys();
+  webpush.setVapidDetails('mailto:admin@tikovia.vn', vapidKeys.publicKey, vapidKeys.privateKey);
 }
 
 // Đảm bảo lưu bản sao khoá VAPID vào ổ cứng SSD (/app/uploads/.vapid.json) để không bao giờ mất khi rebuild Docker
@@ -50,13 +69,6 @@ try {
 } catch (e) {
   logger.warn('Không thể ghi file .vapid.json vào thư mục uploads:', e.message);
 }
-
-// Thiết lập cấu hình web-push với email hợp lệ cho Apple APNs và Google FCM
-webpush.setVapidDetails(
-  config.VAPID_SUBJECT || 'mailto:admin@tikovia.com',
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
-);
 
 // API gửi khoá công khai cho trình duyệt
 const getPublicKey = (req, res) => {
@@ -117,8 +129,33 @@ const subscribe = async (req, res) => {
   }
 };
 
+// API huỷ đăng ký thiết bị khi người dùng đăng xuất (Tránh nhận nhầm thông báo của tài khoản cũ trên cùng điện thoại)
+const unsubscribe = async (req, res) => {
+  const { endpoint, data } = req.body || {};
+  let targetEndpoint = endpoint;
+
+  if (data && !targetEndpoint) {
+    try {
+      const decoded = JSON.parse(Buffer.from(data, 'base64').toString('utf8'));
+      targetEndpoint = decoded?.endpoint;
+    } catch (e) {}
+  }
+
+  try {
+    if (targetEndpoint) {
+      await prisma.pushSubscription.deleteMany({
+        where: { endpoint: String(targetEndpoint) }
+      });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    logger.error('Lỗi xoá đăng ký thông báo đẩy khi đăng xuất:', error);
+    return res.json({ success: true });
+  }
+};
+
 /**
- * Chuẩn hoá đường dẫn Icon cho thông báo đẩy di động (Android FCM / iOS APNs chỉ hỗ trợ PNG/JPG/WebP, không hỗ trợ SVG)
+ * Chuẩn hoá đường dẫn Icon cho thông báo đẩy di động (Android FCM / iOS APNs chỉ hỗ trợ PNG/JPG/WebP qua HTTPS, không hỗ trợ SVG hoặc localhost)
  */
 const PUBLIC_API_ORIGIN = (process.env.PUBLIC_API_URL || 'https://api-chat.tikovia.vn').replace(/\/api\/?$/, '');
 
@@ -127,8 +164,12 @@ function normalizeNotificationIcon(icon) {
   if (icon.includes('dicebear.com') || icon.toLowerCase().endsWith('.svg')) {
     return '/pwa-192x192.png';
   }
-  if (icon.startsWith('/api/uploads/')) {
-    return `${PUBLIC_API_ORIGIN}${icon}`;
+  const uploadsIdx = icon.indexOf('/api/uploads/');
+  if (uploadsIdx !== -1) {
+    return `${PUBLIC_API_ORIGIN}${icon.slice(uploadsIdx)}`;
+  }
+  if (icon.startsWith('http://localhost') || icon.startsWith('http://127.0.0.1') || icon.startsWith('http://192.168.')) {
+    return '/pwa-192x192.png';
   }
   return icon;
 }
@@ -151,14 +192,14 @@ function buildSafeWebPushTopic(rawTopic) {
  */
 const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
   try {
-    if (!userId) return { sent: 0, total: 0 };
+    if (!userId) return { sent: 0, total: 0, errors: [] };
 
     const subscriptions = await prisma.pushSubscription.findMany({
       where: { userId }
     });
 
     if (subscriptions.length === 0) {
-      return { sent: 0, total: 0 };
+      return { sent: 0, total: 0, errors: [] };
     }
 
     const enrichedPayload = {
@@ -182,6 +223,7 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
     }
 
     let sentCount = 0;
+    const errors = [];
 
     const promises = subscriptions.map((sub) => {
       const pushSubscription = {
@@ -198,21 +240,25 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
           sentCount += 1;
         })
         .catch(async (err) => {
-          // Nếu subscription không còn hiệu lực (410 Gone, 404 Not Found, 401/403 VAPID mismatch), xóa khỏi DB
-          if ([401, 403, 404, 410].includes(err.statusCode)) {
-            logger.info(`[Push] Xoá subscription hết hạn/lỗi (${err.statusCode}) của user ${userId}`);
+          const status = err.statusCode || 0;
+          const detail = err.body ? String(err.body).slice(0, 200) : err.message || 'Unknown error';
+          errors.push(`HTTP ${status}: ${detail}`);
+
+          // Nếu subscription không còn hiệu lực (400 Bad Request/VapidPkHashMismatch, 401/403 VAPID mismatch, 404 Not Found, 410 Gone), xóa khỏi DB
+          if ([400, 401, 403, 404, 410].includes(status)) {
+            logger.info(`[Push] Xoá subscription hết hạn/lỗi (${status}) của user ${userId}: ${detail}`);
             await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
           } else {
-            logger.error(`[Push] Lỗi gửi push tới user ${userId}:`, err.message || err);
+            logger.error(`[Push] Lỗi gửi push tới user ${userId} (${status}): ${detail}`);
           }
         });
     });
 
     await Promise.all(promises);
-    return { sent: sentCount, total: subscriptions.length };
+    return { sent: sentCount, total: subscriptions.length, errors };
   } catch (error) {
     logger.error(`Lỗi khi chạy sendNotificationHelper cho user ${userId}:`, error);
-    return { sent: 0, total: 0 };
+    return { sent: 0, total: 0, errors: [error.message] };
   }
 };
 
@@ -222,7 +268,7 @@ const testPushNotification = async (req, res) => {
     const userId = req.userId;
     const result = await sendNotificationHelper(userId, {
       title: '🔔 Kiểm tra thông báo ChatTikovia',
-      body: 'Thiết bị của bạn đã kết nối thông báo đẩy thành công!',
+      body: 'Thiết bị của bạn đã kết nối thông báo đẩy và chuông báo thành công!',
       icon: '/pwa-192x192.png',
       tag: 'device-test',
       data: {
@@ -233,12 +279,19 @@ const testPushNotification = async (req, res) => {
 
     if (result.total === 0) {
       return res.status(404).json({
-        error: 'Chưa có thiết bị nào đăng ký nhận thông báo cho tài khoản này. Vui lòng bật quyền thông báo trên trình duyệt.'
+        error: 'Chưa có thiết bị nào đăng ký nhận thông báo cho tài khoản này. Vui lòng bấm "Đồng bộ lại" để cấp token mới.'
+      });
+    }
+
+    if (result.sent === 0) {
+      return res.status(400).json({
+        error: `Token cũ trên thiết bị đã hết hạn hoặc lệch khoá (${result.errors?.[0] || 'APNs/FCM rejected'}). Đang tự động cấp lại token mới...`,
+        ...result
       });
     }
 
     return res.json({
-      message: `Đã gửi thông báo thử tới ${result.sent}/${result.total} thiết bị đã đăng ký.`,
+      message: `🔔 Đã gửi thông báo thử thành công tới ${result.sent}/${result.total} thiết bị!`,
       ...result
     });
   } catch (error) {
@@ -250,6 +303,7 @@ const testPushNotification = async (req, res) => {
 module.exports = {
   getPublicKey,
   subscribe,
+  unsubscribe,
   sendNotificationHelper,
   testPushNotification
 };
