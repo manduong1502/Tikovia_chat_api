@@ -1,6 +1,7 @@
 const prisma = require('../db');
 const asyncHandler = require('../utils/asyncHandler');
 const { deleteLocalFile } = require('../utils/storage');
+const { sendNotificationHelper } = require('./pushController');
 
 // Tạo cuộc trò chuyện mới (1v1 hoặc nhóm)
 const createConversation = asyncHandler(async (req, res) => {
@@ -88,6 +89,26 @@ const createConversation = asyncHandler(async (req, res) => {
       io.to(`user-${member.userId}`).emit('conversation-updated', {
         conversationId: conversation.id
       });
+    });
+  }
+
+  // Nếu tạo nhóm mới, gửi thông báo đẩy (Web Push) cho các thành viên được thêm vào nhóm
+  if (conversation.isGroup) {
+    const creatorMember = conversation.members.find((m) => m.userId === currentUserId);
+    const creatorName = creatorMember?.user?.displayName || 'Đồng nghiệp';
+    const otherMembers = conversation.members.filter((m) => m.userId !== currentUserId);
+    otherMembers.forEach((m) => {
+      sendNotificationHelper(m.userId, {
+        title: `👥 Nhóm mới: ${conversation.name || 'Nhóm chat'}`,
+        body: `${creatorName} vừa thêm bạn vào nhóm "${conversation.name || 'Nhóm chat'}"`,
+        icon: conversation.avatarUrl || '/pwa-192x192.png',
+        conversationId: conversation.id,
+        data: {
+          url: '/',
+          conversationId: conversation.id,
+          type: 'group-added'
+        }
+      }).catch(() => {});
     });
   }
 
@@ -840,6 +861,21 @@ const addGroupMembers = asyncHandler(async (req, res) => {
       io.to(`user-${member.userId}`).emit('conversation-updated', { conversationId });
     });
   }
+
+  // Gửi Web Push thông báo cho các thành viên mới được thêm vào nhóm
+  newMemberIds.forEach((newUserId) => {
+    sendNotificationHelper(newUserId, {
+      title: `👥 ${updatedConv.name || 'Nhóm chat'}`,
+      body: `${currentUser?.displayName || 'Thành viên'} vừa thêm bạn vào nhóm`,
+      icon: updatedConv.avatarUrl || '/pwa-192x192.png',
+      conversationId,
+      data: {
+        url: '/',
+        conversationId,
+        type: 'group-added'
+      }
+    }).catch(() => {});
+  });
 
   res.status(200).json(updatedConv);
 });
