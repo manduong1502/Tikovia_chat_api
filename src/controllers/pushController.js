@@ -157,7 +157,7 @@ const unsubscribe = async (req, res) => {
 /**
  * Chuẩn hoá đường dẫn Icon cho thông báo đẩy di động (Android FCM / iOS APNs chỉ hỗ trợ PNG/JPG/WebP qua HTTPS, không hỗ trợ SVG hoặc localhost)
  */
-const PUBLIC_API_ORIGIN = (process.env.PUBLIC_API_URL || 'https://api-chat.tikovia.vn').replace(/\/api\/?$/, '');
+const PUBLIC_API_ORIGIN = (process.env.PUBLIC_API_URL || 'https://api-chat.bonix.site').replace(/\/api\/?$/, '');
 
 function normalizeNotificationIcon(icon) {
   if (!icon || typeof icon !== 'string') return '/pwa-192x192.png';
