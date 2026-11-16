@@ -33,13 +33,6 @@ if (config.JWT_SECRET === DEFAULT_JWT_SECRET && config.NODE_ENV === 'production'
   console.error('╚══════════════════════════════════════════════════════════════╝');
 }
 
-if (!process.env.SYSTEM_API_KEY && config.NODE_ENV === 'production') {
-  console.error(
-    '⚠️  CẢNH BÁO BẢO MẬT: SYSTEM_API_KEY chưa được đặt trong .env → API tích hợp KiotViet (/api/integration) ' +
-      'đang dùng khoá mặc định công khai trong mã nguồn. Hãy đặt SYSTEM_API_KEY riêng và cập nhật bên gọi (BizPOS).'
-  );
-}
-
 if (config.CORS_ORIGINS === '*' && config.NODE_ENV === 'production') {
   console.warn('⚠️  Gợi ý bảo mật: Đặt CORS_ORIGINS=https://chat.bonix.site trong .env để chỉ cho phép web chat chính thức gọi API.');
 }
