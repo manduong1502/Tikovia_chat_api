@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../db');
 const { JWT_SECRET } = require('../config');
-const { deleteLocalFile } = require('../utils/storage');
+const { deleteLocalFile, isValidAvatarUrl } = require('../utils/storage');
 
 const SYSTEM_USER_IDS = [
   '00000000-0000-0000-0000-000000000000',
@@ -29,6 +29,10 @@ async function register(req, res) {
 
     if (password.length < 6 || password.length > 72) {
       return res.status(400).json({ error: 'Mật khẩu phải từ 6-72 ký tự' });
+    }
+
+    if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
+      return res.status(400).json({ error: 'Đường dẫn ảnh đại diện không hợp lệ' });
     }
 
     const existingUser = await prisma.user.findUnique({ where: { username } });
@@ -204,12 +208,26 @@ async function updateProfile(req, res) {
       }
       updatedData.displayName = trimmedName;
     }
-    if (phone !== undefined) updatedData.phone = phone ? String(phone).trim() : null;
-    if (avatarUrl) {
-      if (user.avatarUrl && user.avatarUrl !== avatarUrl) {
-        deleteLocalFile(user.avatarUrl).catch(() => {});
+    if (phone !== undefined) {
+      const cleanPhone = phone ? String(phone).trim() : null;
+      if (cleanPhone && cleanPhone.length > 25) {
+        return res.status(400).json({ error: 'Số điện thoại không hợp lệ' });
       }
-      updatedData.avatarUrl = avatarUrl;
+      updatedData.phone = cleanPhone;
+    }
+    if (avatarUrl !== undefined) {
+      if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
+        return res.status(400).json({ error: 'Đường dẫn ảnh đại diện không hợp lệ (chỉ chấp nhận HTTPS hoặc ảnh tải lên hệ thống)' });
+      }
+      if (user.avatarUrl && user.avatarUrl !== avatarUrl && user.avatarUrl.startsWith('/api/uploads/avatars/')) {
+        const otherUsersCount = await prisma.user.count({
+          where: { avatarUrl: user.avatarUrl, id: { not: userId } }
+        });
+        if (otherUsersCount === 0) {
+          deleteLocalFile(user.avatarUrl, 'avatars').catch(() => {});
+        }
+      }
+      updatedData.avatarUrl = avatarUrl ? String(avatarUrl).trim() : null;
     }
 
     if (password && newPassword) {

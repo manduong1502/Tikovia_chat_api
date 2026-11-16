@@ -16,7 +16,7 @@ const taskRoutes = require('./routes/tasks');
 const logRoutes = require('./routes/logs');
 const integrationRoutes = require('./routes/integration');
 const { sendNotificationHelper } = require('./controllers/pushController');
-const { authLimiter, messageLimiter } = require('./middlewares/rateLimiter');
+const { authLimiter, messageLimiter, logLimiter } = require('./middlewares/rateLimiter');
 const errorHandler = require('./middlewares/errorHandler');
 const { BASE_UPLOAD_DIR } = require('./utils/storage');
 const logger = require('./utils/logger');
@@ -72,7 +72,16 @@ if (!fs.existsSync(BASE_UPLOAD_DIR)) {
 
 app.use(
   '/api/uploads',
+  (req, res, next) => {
+    const decodedPath = decodeURIComponent(req.path || '');
+    if (decodedPath.includes('..') || /(?:^|[\\/])\./.test(decodedPath)) {
+      return res.status(403).json({ error: 'Truy cập bị từ chối' });
+    }
+    next();
+  },
   express.static(BASE_UPLOAD_DIR, {
+    dotfiles: 'deny',
+    index: false,
     maxAge: '365d',
     immutable: true,
     etag: true,
@@ -110,7 +119,7 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/auth', messageLimiter, authRoutes);
 app.use('/api/chat', messageLimiter, chatRoutes);
 app.use('/api/tasks', messageLimiter, taskRoutes);
-app.use('/api/logs', authLimiter, logRoutes);
+app.use('/api/logs', logLimiter, logRoutes);
 app.use('/api/integration', integrationRoutes);
 
 // Socket.io connection mapping: userId -> Set<socketId> để hỗ trợ multi-tab

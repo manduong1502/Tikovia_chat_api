@@ -70,6 +70,43 @@ try {
   logger.warn('Không thể ghi file .vapid.json vào thư mục uploads:', e.message);
 }
 
+const ALLOWED_PUSH_HOST_SUFFIXES = [
+  'fcm.googleapis.com',
+  'android.googleapis.com',
+  '.push.apple.com',
+  '.notify.windows.com',
+  '.push.services.mozilla.com',
+  '.push.opera.com',
+  '.ird.yahoo.com'
+];
+
+/**
+ * Kiểm tra chặt chẽ Web Push Endpoint để ngăn chặn lỗ hổng SSRF (Server-Side Request Forgery)
+ */
+function isValidWebPushEndpoint(endpoint) {
+  if (!endpoint || typeof endpoint !== 'string' || endpoint.length > 1500) return false;
+  try {
+    const parsed = new URL(endpoint);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return false;
+    }
+    return ALLOWED_PUSH_HOST_SUFFIXES.some((suffix) =>
+      suffix.startsWith('.') ? host.endsWith(suffix) : host === suffix
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 // API gửi khoá công khai cho trình duyệt
 const getPublicKey = (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
@@ -93,16 +130,16 @@ const subscribe = async (req, res) => {
     }
   }
 
-  if (!finalSubscription || !finalSubscription.endpoint) {
-    return res.status(400).json({ error: 'Dữ liệu đăng ký không hợp lệ' });
+  if (!finalSubscription || !isValidWebPushEndpoint(finalSubscription.endpoint)) {
+    return res.status(400).json({ error: 'Endpoint thông báo đẩy không hợp lệ hoặc không được hỗ trợ' });
   }
 
   try {
-    const keysP256dh = finalSubscription.keys?.p256dh || '';
-    const keysAuth = finalSubscription.keys?.auth || '';
+    const keysP256dh = String(finalSubscription.keys?.p256dh || '').trim();
+    const keysAuth = String(finalSubscription.keys?.auth || '').trim();
 
-    if (!keysP256dh || !keysAuth) {
-      return res.status(400).json({ error: 'Thiếu khoá mã hoá p256dh hoặc auth' });
+    if (!keysP256dh || !keysAuth || keysP256dh.length > 256 || keysAuth.length > 128) {
+      return res.status(400).json({ error: 'Thiếu hoặc sai định dạng khoá mã hoá p256dh / auth' });
     }
 
     const saved = await prisma.pushSubscription.upsert({
@@ -129,8 +166,9 @@ const subscribe = async (req, res) => {
   }
 };
 
-// API huỷ đăng ký thiết bị khi người dùng đăng xuất (Tránh nhận nhầm thông báo của tài khoản cũ trên cùng điện thoại)
+// API huỷ đăng ký thiết bị khi người dùng đăng xuất (Chỉ cho phép xóa subscription thuộc về chính userId đang đăng nhập)
 const unsubscribe = async (req, res) => {
+  const userId = req.userId;
   const { endpoint, data } = req.body || {};
   let targetEndpoint = endpoint;
 
@@ -142,9 +180,12 @@ const unsubscribe = async (req, res) => {
   }
 
   try {
-    if (targetEndpoint) {
+    if (targetEndpoint && userId) {
       await prisma.pushSubscription.deleteMany({
-        where: { endpoint: String(targetEndpoint) }
+        where: {
+          endpoint: String(targetEndpoint),
+          userId
+        }
       });
     }
     return res.json({ success: true });
@@ -172,6 +213,49 @@ function normalizeNotificationIcon(icon) {
     return '/pwa-192x192.png';
   }
   return icon;
+}
+
+function normalizeNotificationImage(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== 'string') return undefined;
+  const uploadsIdx = imageUrl.indexOf('/api/uploads/');
+  if (uploadsIdx !== -1) {
+    return `${PUBLIC_API_ORIGIN}${imageUrl.slice(uploadsIdx)}`;
+  }
+  if (imageUrl.startsWith('https://')) {
+    return imageUrl;
+  }
+  return undefined;
+}
+
+/**
+ * Tính nhanh tổng số tin nhắn chưa đọc + công việc đang chờ của người dùng
+ * để cập nhật chính xác con số trên biểu tượng màn hình chính (iOS APNs & Android Badging API)
+ */
+async function computeUserBadgeCount(userId) {
+  try {
+    const [unreadRows, pendingTasks] = await Promise.all([
+      prisma.$queryRaw`
+        SELECT COUNT(*)::int AS "totalUnread"
+        FROM "Message" m
+        INNER JOIN "ConversationMember" cm
+          ON cm."conversationId" = m."conversationId"
+          AND cm."userId" = ${userId}
+        WHERE m."createdAt" > cm."lastReadAt"
+          AND m."senderId" != ${userId}
+          AND m."isRecalled" = false
+      `,
+      prisma.task.count({
+        where: {
+          assigneeId: userId,
+          status: { in: ['pending', 'in_progress'] }
+        }
+      })
+    ]);
+    const unreadMsgs = Number(unreadRows?.[0]?.totalUnread) || 0;
+    return Math.max(1, unreadMsgs + (Number(pendingTasks) || 0));
+  } catch (e) {
+    return 1;
+  }
 }
 
 /**
@@ -202,10 +286,16 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
       return { sent: 0, total: 0, errors: [] };
     }
 
+    const badgeCount =
+      payload?.badgeCount !== undefined ? payload.badgeCount : await computeUserBadgeCount(userId);
+    const normalizedImage = normalizeNotificationImage(payload?.image);
+
     const enrichedPayload = {
       timestamp: Date.now(),
+      badgeCount,
       ...payload,
-      icon: normalizeNotificationIcon(payload?.icon)
+      icon: normalizeNotificationIcon(payload?.icon),
+      ...(normalizedImage ? { image: normalizedImage } : {})
     };
     const payloadString = JSON.stringify(enrichedPayload);
 
@@ -304,6 +394,7 @@ module.exports = {
   getPublicKey,
   subscribe,
   unsubscribe,
+  isValidWebPushEndpoint,
   sendNotificationHelper,
   testPushNotification
 };

@@ -8,7 +8,8 @@ const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024; // Giới hạn file log 5MB, tự �
 function sanitizeField(val, maxLen = 500) {
   if (!val) return 'N/A';
   const str = typeof val === 'string' ? val : JSON.stringify(val);
-  return str.slice(0, maxLen);
+  // Loại bỏ các ký tự điều khiển ANSI/Escape để chống Log Injection
+  return str.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, maxLen);
 }
 
 router.post('/client-error', (req, res) => {

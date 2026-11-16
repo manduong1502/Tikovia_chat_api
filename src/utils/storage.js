@@ -15,12 +15,14 @@ if (!fs.existsSync(BASE_UPLOAD_DIR)) {
 
 // Danh sách các định dạng tệp bị cấm vì lý do an toàn bảo mật (chống XSS, RCE và malware)
 const BLOCKED_EXTENSIONS = new Set([
-  '.html', '.htm', '.xhtml', '.shtml',
+  '.html', '.htm', '.xhtml', '.shtml', '.xml', '.xsl', '.xslt',
   '.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx',
-  '.svg', '.svgz', // Ngăn Stored XSS qua SVG chứa script
+  '.svg', '.svgz', '.swf', // Ngăn Stored XSS qua SVG/XML/Flash chứa script
   '.php', '.php3', '.php4', '.php5', '.phtml', '.phar',
   '.asp', '.aspx', '.jsp', '.jspx', '.pl', '.py', '.rb', '.cgi',
-  '.sh', '.bash', '.zsh', '.bat', '.cmd', '.ps1', '.exe', '.com', '.msi', '.dll', '.scr', '.vbs', '.wsf', '.lnk', '.hta', '.jar'
+  '.sh', '.bash', '.zsh', '.bat', '.cmd', '.ps1', '.exe', '.com', '.msi', '.dll', '.scr',
+  '.vbs', '.wsf', '.lnk', '.hta', '.jar', '.reg', '.inf', '.scf', '.url', '.desktop',
+  '.pem', '.key', '.pfx', '.p12'
 ]);
 
 const BLOCKED_MIME_TYPES = new Set([
@@ -150,21 +152,52 @@ const uploadMiddleware = multer({
 });
 
 /**
- * Xóa tệp vật lý trên ổ cứng SSD khi tin nhắn bị thu hồi (Recall) hoặc thay ảnh đại diện,
- * có kiểm tra chống Path Traversal tuyệt đối.
+ * Kiểm tra đường dẫn Avatar hợp lệ (Chỉ cho phép ảnh nội bộ trong /api/uploads/avatars/ hoặc URL HTTPS hợp lệ)
  */
-async function deleteLocalFile(fileUrl) {
+function isValidAvatarUrl(avatarUrl) {
+  if (avatarUrl === null || avatarUrl === undefined || avatarUrl === '') return true;
+  if (typeof avatarUrl !== 'string' || avatarUrl.length > 500) return false;
+  const trimmed = avatarUrl.trim();
+  if (trimmed.startsWith('/api/uploads/avatars/')) {
+    const fileName = trimmed.slice('/api/uploads/avatars/'.length);
+    return /^[a-zA-Z0-9._-]+$/.test(fileName) && !fileName.startsWith('.') && !fileName.includes('..');
+  }
+  if (trimmed.startsWith('https://')) {
+    try {
+      const parsed = new URL(trimmed);
+      return parsed.protocol === 'https:';
+    } catch (e) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Xóa tệp vật lý trên ổ cứng SSD khi tin nhắn bị thu hồi (Recall) hoặc thay ảnh đại diện,
+ * có kiểm tra chống Path Traversal và giới hạn thư mục con (allowedSubdir) tuyệt đối.
+ */
+async function deleteLocalFile(fileUrl, allowedSubdir = null) {
   if (!fileUrl || typeof fileUrl !== 'string') return false;
   if (!fileUrl.startsWith('/api/uploads/')) return false;
 
   try {
     const relativePart = decodeURIComponent(fileUrl.replace(/^\/api\/uploads\//, ''));
-    if (!relativePart || relativePart.startsWith('.')) return false;
+    if (!relativePart || relativePart.startsWith('.') || relativePart.includes('..')) return false;
 
+    const segments = relativePart.split(/[\\/]/).filter(Boolean);
+    if (segments.length === 0 || segments.some((seg) => seg.startsWith('.'))) {
+      return false;
+    }
+
+    const baseAllowedDir = allowedSubdir
+      ? path.resolve(BASE_UPLOAD_DIR, allowedSubdir)
+      : BASE_UPLOAD_DIR;
     const resolvedPath = path.resolve(BASE_UPLOAD_DIR, relativePart);
-    // Đảm bảo đường dẫn giải quyết nằm bên trong BASE_UPLOAD_DIR
-    if (!resolvedPath.startsWith(BASE_UPLOAD_DIR + path.sep)) {
-      logger.warn(`[Storage] Phát hiện đường dẫn không hợp lệ khi xóa file: ${fileUrl}`);
+
+    // Đảm bảo đường dẫn giải quyết nằm bên trong thư mục được phép (BASE_UPLOAD_DIR hoặc allowedSubdir)
+    if (!resolvedPath.startsWith(baseAllowedDir + path.sep)) {
+      logger.warn(`[Storage] Chặn xóa tệp ngoài phạm vi cho phép (${allowedSubdir || 'root'}): ${fileUrl}`);
       return false;
     }
 
@@ -183,5 +216,6 @@ module.exports = {
   BASE_UPLOAD_DIR,
   uploadMiddleware,
   decodeOriginalFilename,
+  isValidAvatarUrl,
   deleteLocalFile
 };

@@ -105,7 +105,17 @@ const messageLimiter = rateLimit({
   message: 'Tần suất thao tác quá nhanh. Vui lòng thử lại sau ít giây.'
 });
 
+// Route ghi log lỗi từ Client: Tách riêng bucket để không bao giờ ảnh hưởng đến việc đăng nhập
+const logLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 15,
+  byIpOnly: true,
+  keyPrefix: 'client-logs',
+  message: 'Quá nhiều báo cáo lỗi từ thiết bị này.'
+});
+
 module.exports = {
   authLimiter,
-  messageLimiter
+  messageLimiter,
+  logLimiter
 };

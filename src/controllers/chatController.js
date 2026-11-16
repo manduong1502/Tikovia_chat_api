@@ -1,6 +1,6 @@
 const prisma = require('../db');
 const asyncHandler = require('../utils/asyncHandler');
-const { deleteLocalFile } = require('../utils/storage');
+const { deleteLocalFile, isValidAvatarUrl } = require('../utils/storage');
 const { sendNotificationHelper } = require('./pushController');
 
 // Tạo cuộc trò chuyện mới (1v1 hoặc nhóm)
@@ -50,10 +50,14 @@ const createConversation = asyncHandler(async (req, res) => {
     }
   }
 
+  if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
+    return res.status(400).json({ error: 'Đường dẫn ảnh đại diện nhóm không hợp lệ' });
+  }
+
   // Tạo cuộc trò chuyện mới (Để avatarUrl = null nếu chưa tải ảnh để Avatar.jsx tự vẽ chữ cái đầu tức thì, không phụ thuộc mạng quốc tế dicebear.com)
   const conversation = await prisma.conversation.create({
     data: {
-      name: isGroup ? (name || 'Nhóm mới').trim() : null,
+      name: isGroup ? String(name || 'Nhóm mới').trim().slice(0, 100) : null,
       isGroup: Boolean(isGroup),
       avatarUrl: avatarUrl || null,
       createdById: currentUserId,
@@ -390,16 +394,35 @@ const setNickname = asyncHandler(async (req, res) => {
   const { targetUserId, nickname } = req.body;
   const currentUserId = req.userId;
 
-  const isMember = await prisma.conversationMember.findUnique({
-    where: {
-      conversationId_userId: {
-        conversationId,
-        userId: currentUserId
-      }
-    }
-  });
+  if (!targetUserId) {
+    return res.status(400).json({ error: 'Thiếu mã người dùng cần đổi biệt danh' });
+  }
 
-  if (!isMember) {
+  const cleanNickname = nickname ? String(nickname).trim() : null;
+  if (cleanNickname && cleanNickname.length > 50) {
+    return res.status(400).json({ error: 'Biệt danh không được vượt quá 50 ký tự' });
+  }
+
+  const [isMember, targetMember] = await Promise.all([
+    prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: currentUserId
+        }
+      }
+    }),
+    prisma.conversationMember.findUnique({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: String(targetUserId)
+        }
+      }
+    })
+  ]);
+
+  if (!isMember || !targetMember) {
     return res.status(403).json({ error: 'Không có quyền thực hiện thao tác này' });
   }
 
@@ -407,10 +430,10 @@ const setNickname = asyncHandler(async (req, res) => {
     where: {
       conversationId_userId: {
         conversationId,
-        userId: targetUserId
+        userId: String(targetUserId)
       }
     },
-    data: { nickname: nickname ? String(nickname).trim() : null }
+    data: { nickname: cleanNickname }
   });
 
   const io = req.app.get('io');
@@ -536,7 +559,22 @@ const createReminder = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Bạn không có quyền tạo nhắc hẹn trong cuộc trò chuyện này' });
   }
 
-  const cleanTitle = String(title).trim();
+  if (existingMessage && existingMessage.conversationId !== targetConversationId) {
+    return res.status(403).json({ error: 'Tin nhắn liên kết không thuộc cuộc trò chuyện này' });
+  }
+
+  let safeReplyToId = null;
+  if (replyToId) {
+    const replyTarget = await prisma.message.findUnique({
+      where: { id: String(replyToId) },
+      select: { id: true, conversationId: true }
+    });
+    if (replyTarget && replyTarget.conversationId === targetConversationId) {
+      safeReplyToId = replyTarget.id;
+    }
+  }
+
+  const cleanTitle = String(title).trim().slice(0, 200);
 
   const { reminder, createdMessage } = await prisma.$transaction(async (tx) => {
     let msgRecord = existingMessage;
@@ -552,7 +590,7 @@ const createReminder = asyncHandler(async (req, res) => {
             remindAt: parsedDate.toISOString(),
             title: cleanTitle
           }),
-          replyToId: replyToId || null
+          replyToId: safeReplyToId
         },
         include: {
           sender: {
@@ -1044,15 +1082,24 @@ const updateGroupDetails = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Chỉ Trưởng nhóm mới có quyền sửa đổi thông tin nhóm' });
   }
 
-  // Nếu thay đổi ảnh đại diện nhóm và ảnh cũ nằm trên SSD cục bộ, xóa ảnh cũ để tiết kiệm dung lượng
-  if (avatarUrl && conversation.avatarUrl && avatarUrl !== conversation.avatarUrl) {
-    deleteLocalFile(conversation.avatarUrl).catch(() => {});
+  if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
+    return res.status(400).json({ error: 'Đường dẫn ảnh đại diện nhóm không hợp lệ' });
+  }
+
+  // Nếu thay đổi ảnh đại diện nhóm và ảnh cũ nằm trong thư mục avatars trên SSD cục bộ, xóa ảnh cũ để tiết kiệm dung lượng
+  if (
+    avatarUrl &&
+    conversation.avatarUrl &&
+    avatarUrl !== conversation.avatarUrl &&
+    conversation.avatarUrl.startsWith('/api/uploads/avatars/')
+  ) {
+    deleteLocalFile(conversation.avatarUrl, 'avatars').catch(() => {});
   }
 
   const updatedConv = await prisma.conversation.update({
     where: { id: conversationId },
     data: {
-      name: name ? String(name).trim() : undefined,
+      name: name ? String(name).trim().slice(0, 100) : undefined,
       avatarUrl: avatarUrl || undefined,
       updatedAt: new Date()
     },

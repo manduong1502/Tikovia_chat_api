@@ -2,7 +2,7 @@
  * Socket.io Event Handlers cho ChatTikovia (Production Edition)
  */
 
-const { sendNotificationHelper } = require('./controllers/pushController');
+const { sendNotificationHelper, isValidWebPushEndpoint } = require('./controllers/pushController');
 const { deleteLocalFile } = require('./utils/storage');
 const logger = require('./utils/logger');
 
@@ -115,19 +115,19 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
           return;
         }
 
-        if (!subscription || !subscription.endpoint) {
+        if (!subscription || !isValidWebPushEndpoint(subscription.endpoint)) {
           if (typeof callback === 'function') callback({ success: false, error: 'Dữ liệu push token không hợp lệ' });
           return;
         }
 
         try {
-          const keysP256dh = subscription.keys?.p256dh || '';
-          const keysAuth = subscription.keys?.auth || '';
+          const keysP256dh = String(subscription.keys?.p256dh || '').trim();
+          const keysAuth = String(subscription.keys?.auth || '').trim();
           const userAgent = socket.handshake.headers?.['user-agent']
             ? String(socket.handshake.headers['user-agent']).slice(0, 500)
             : null;
 
-          if (!keysP256dh || !keysAuth) {
+          if (!keysP256dh || !keysAuth || keysP256dh.length > 256 || keysAuth.length > 128) {
             if (typeof callback === 'function') callback({ success: false, error: 'Thiếu khoá mã hoá p256dh/auth' });
             return;
           }
@@ -216,6 +216,18 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             return socket.emit('error-response', { error: 'Bạn không có quyền gửi tin nhắn trong cuộc hội thoại này' });
           }
 
+          // Kiểm tra chống IDOR qua replyToId: Đảm bảo tin nhắn được trả lời thuộc cùng một cuộc hội thoại
+          let safeReplyToId = null;
+          if (replyToId) {
+            const replyTarget = await prisma.message.findUnique({
+              where: { id: String(replyToId) },
+              select: { id: true, conversationId: true }
+            });
+            if (replyTarget && replyTarget.conversationId === conversationId) {
+              safeReplyToId = replyTarget.id;
+            }
+          }
+
           const now = new Date();
 
           const [newMessage] = await prisma.$transaction([
@@ -230,7 +242,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
                     ? metadata
                     : JSON.stringify(metadata)
                   : null,
-                replyToId: replyToId || null
+                replyToId: safeReplyToId
               },
               include: {
                 sender: {
@@ -331,20 +343,25 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
 
             const finalTitle = isMentioned ? `🔔 ${senderName} đã nhắc đến bạn` : baseTitle;
 
-            sendNotificationHelper(member.userId, {
-              title: finalTitle,
-              body: pushBody,
-              url: '/',
-              conversationId,
-              tag: `conv-${conversationId}`,
-              icon: newMessage.sender?.avatarUrl || '/pwa-192x192.png',
-              data: {
+            sendNotificationHelper(
+              member.userId,
+              {
+                title: finalTitle,
+                body: pushBody,
                 url: '/',
                 conversationId,
-                messageId: newMessage.id,
-                type: 'message'
-              }
-            });
+                tag: `conv-${conversationId}`,
+                icon: newMessage.sender?.avatarUrl || '/pwa-192x192.png',
+                ...(type === 'image' && content ? { image: String(content) } : {}),
+                data: {
+                  url: '/',
+                  conversationId,
+                  messageId: newMessage.id,
+                  type: 'message'
+                }
+              },
+              { urgency: 'high', TTL: 86400 }
+            );
           });
         } catch (error) {
           logger.error('Lỗi khi gửi tin nhắn qua socket:', error);
