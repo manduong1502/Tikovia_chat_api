@@ -19,6 +19,7 @@ const { sendNotificationHelper } = require('./controllers/pushController');
 const { authLimiter, messageLimiter, logLimiter } = require('./middlewares/rateLimiter');
 const errorHandler = require('./middlewares/errorHandler');
 const { BASE_UPLOAD_DIR } = require('./utils/storage');
+const { verifyUserToken } = require('./utils/session');
 const logger = require('./utils/logger');
 
 const app = express();
@@ -133,18 +134,21 @@ const userSocketMap = new Map();
 // Cuộc gọi đang hoạt động: receiverId -> { from, callerName, callerAvatar, isVideo, conversationId, accepted }
 const activeCalls = new Map();
 
-// --- SOCKET.IO HANDSHAKE JWT AUTHENTICATION MIDDLEWARE ---
-io.use((socket, next) => {
+// --- SOCKET.IO HANDSHAKE JWT AUTHENTICATION MIDDLEWARE (kiểm tra cả phiên đã bị thu hồi khi đổi mật khẩu) ---
+io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) {
     return next(new Error('Authentication error: Token missing'));
   }
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    socket.userId = decoded.userId;
+    const session = await verifyUserToken(token);
+    socket.userId = session.userId;
+    socket.tokenVersion = session.tokenVersion;
+    socket.data.tokenVersion = session.tokenVersion;
     next();
   } catch (err) {
-    return next(new Error('Authentication error: Invalid token'));
+    const reason = err && err.message === 'TOKEN_REVOKED' ? 'Session revoked' : 'Invalid token';
+    return next(new Error(`Authentication error: ${reason}`));
   }
 });
 

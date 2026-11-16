@@ -1,8 +1,9 @@
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const prisma = require('../db');
-const { JWT_SECRET } = require('../config');
 const { deleteLocalFile, isValidAvatarUrl } = require('../utils/storage');
+const { signUserToken, setCachedTokenVersion } = require('../utils/session');
+
+const MIN_PASSWORD_LENGTH = 8;
 
 const SYSTEM_USER_IDS = [
   '00000000-0000-0000-0000-000000000000',
@@ -27,8 +28,8 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Tên hiển thị phải từ 2-50 ký tự' });
     }
 
-    if (password.length < 6 || password.length > 72) {
-      return res.status(400).json({ error: 'Mật khẩu phải từ 6-72 ký tự' });
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH || password.length > 72) {
+      return res.status(400).json({ error: `Mật khẩu phải từ ${MIN_PASSWORD_LENGTH}-72 ký tự` });
     }
 
     if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
@@ -52,7 +53,7 @@ async function register(req, res) {
       },
     });
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    const token = signUserToken(user.id, Number(user.tokenVersion) || 0);
 
     res.status(201).json({
       message: 'Đăng ký thành công',
@@ -96,7 +97,7 @@ async function login(req, res) {
       data: { status: 'online', lastSeen: new Date() }
     });
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    const token = signUserToken(user.id, Number(user.tokenVersion) || 0);
 
     res.json({
       message: 'Đăng nhập thành công',
@@ -231,15 +232,22 @@ async function updateProfile(req, res) {
       updatedData.avatarUrl = avatarUrl ? String(avatarUrl).trim() : null;
     }
 
+    let passwordChanged = false;
     if (password && newPassword) {
-      if (newPassword.length < 6 || newPassword.length > 72) {
-        return res.status(400).json({ error: 'Mật khẩu mới phải từ 6-72 ký tự' });
+      if (typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH || newPassword.length > 72) {
+        return res.status(400).json({ error: `Mật khẩu mới phải từ ${MIN_PASSWORD_LENGTH}-72 ký tự` });
       }
-      const isMatch = await bcrypt.compare(password, user.passwordHash);
+      if (newPassword === password) {
+        return res.status(400).json({ error: 'Mật khẩu mới phải khác mật khẩu hiện tại' });
+      }
+      const isMatch = await bcrypt.compare(String(password), user.passwordHash);
       if (!isMatch) {
         return res.status(400).json({ error: 'Mật khẩu cũ không chính xác' });
       }
       updatedData.passwordHash = await bcrypt.hash(newPassword, 10);
+      // Tăng tokenVersion → mọi phiên đăng nhập cũ trên các máy khác lập tức mất hiệu lực
+      updatedData.tokenVersion = { increment: 1 };
+      passwordChanged = true;
     }
 
     const updatedUser = await prisma.user.update({
@@ -251,14 +259,54 @@ async function updateProfile(req, res) {
         displayName: true,
         avatarUrl: true,
         phone: true,
-        status: true
+        status: true,
+        tokenVersion: true
       }
     });
 
-    res.json({
-      message: 'Cập nhật thông tin thành công',
-      user: updatedUser
-    });
+    const { tokenVersion: newTokenVersion, ...safeUser } = updatedUser;
+    const responseBody = {
+      message: passwordChanged
+        ? 'Đổi mật khẩu thành công. Các thiết bị khác đã được đăng xuất.'
+        : 'Cập nhật thông tin thành công',
+      user: safeUser
+    };
+
+    if (passwordChanged) {
+      setCachedTokenVersion(userId, newTokenVersion);
+      // Cấp token mới cho chính thiết bị đang đổi mật khẩu để không bị đăng xuất
+      responseBody.token = signUserToken(userId, newTokenVersion);
+
+      // Gỡ đăng ký thông báo đẩy của các thiết bị khác (giữ lại thiết bị hiện tại nếu client gửi kèm endpoint)
+      const keepEndpoint = typeof req.body.currentEndpoint === 'string' ? req.body.currentEndpoint : null;
+      await prisma.pushSubscription
+        .deleteMany({
+          where: {
+            userId,
+            ...(keepEndpoint ? { endpoint: { not: keepEndpoint } } : {})
+          }
+        })
+        .catch(() => {});
+
+      // Ngắt kết nối realtime của các phiên cũ trên máy khác và yêu cầu chúng đăng xuất
+      // (Socket của chính thiết bị đang đổi mật khẩu chỉ bị ngắt im lặng, client sẽ tự kết nối lại bằng token mới)
+      const io = req.app.get('io');
+      if (io) {
+        try {
+          const currentSocketId = typeof req.body.currentSocketId === 'string' ? req.body.currentSocketId : null;
+          const sockets = await io.in(`user-${userId}`).fetchSockets();
+          sockets.forEach((s) => {
+            if ((Number(s.data?.tokenVersion) || 0) === newTokenVersion) return;
+            if (s.id !== currentSocketId) {
+              s.emit('force-logout', { reason: 'password-changed' });
+            }
+            s.disconnect(true);
+          });
+        } catch (e) {}
+      }
+    }
+
+    res.json(responseBody);
   } catch (error) {
     console.error('Lỗi cập nhật trang cá nhân:', error);
     res.status(500).json({ error: 'Lỗi hệ thống khi cập nhật thông tin' });

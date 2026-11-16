@@ -9,6 +9,7 @@ tikovia-chat-server-*.json
 *.pem
 *.key
 logs
+test
 uploads
 temp_uploads
 prisma/*.db

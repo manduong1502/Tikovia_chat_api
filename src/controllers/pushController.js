@@ -241,11 +241,22 @@ async function computeUserBadgeCount(userId) {
         WHERE m."createdAt" > cm."lastReadAt"
           AND m."senderId" != ${userId}
           AND m."isRecalled" = false
+          AND NOT EXISTS (
+            SELECT 1 FROM "MessageDeletion" md
+            WHERE md."messageId" = m."id" AND md."userId" = ${userId}
+          )
       `,
       prisma.task.count({
         where: {
-          assigneeId: userId,
-          status: { in: ['pending', 'in_progress'] }
+          status: { in: ['pending', 'in_progress'] },
+          OR: [
+            { assigneeId: userId },
+            // Đơn hàng Kho Đông Lạnh chưa có người nhận trong các nhóm người dùng tham gia (khớp với cách app đếm)
+            {
+              assigneeId: '00000000-0000-0000-0000-000000000001',
+              conversation: { members: { some: { userId } } }
+            }
+          ]
         }
       })
     ]);

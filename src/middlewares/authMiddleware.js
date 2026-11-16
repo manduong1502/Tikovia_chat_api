@@ -1,30 +1,37 @@
-const jwt = require('jsonwebtoken');
-const { JWT_SECRET } = require('../config');
+const { verifyUserToken } = require('../utils/session');
+const { contextStore } = require('../utils/context');
 
-function verifyToken(req, res, next) {
+async function verifyToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  
+
   if (!authHeader) {
     return res.status(401).json({ error: 'Không tìm thấy token xác thực' });
   }
 
-  const token = authHeader.split(' ')[1]; // Định dạng "Bearer TOKEN"
-  
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+
   if (!token) {
     return res.status(401).json({ error: 'Token không hợp lệ' });
   }
 
+  let session;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.userId = decoded.userId;
-    
-    const { contextStore } = require('../utils/context');
-    contextStore.run({ userId: decoded.userId }, () => {
-      next();
-    });
+    session = await verifyUserToken(token);
   } catch (error) {
-    return res.status(401).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ' });
+    const revoked = error && error.message === 'TOKEN_REVOKED';
+    return res.status(401).json({
+      error: revoked
+        ? 'Mật khẩu tài khoản đã được thay đổi. Vui lòng đăng nhập lại.'
+        : 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ',
+      code: revoked ? 'SESSION_REVOKED' : 'SESSION_INVALID'
+    });
   }
+
+  req.userId = session.userId;
+  req.tokenVersion = session.tokenVersion;
+  contextStore.run({ userId: session.userId }, () => {
+    next();
+  });
 }
 
 module.exports = verifyToken;

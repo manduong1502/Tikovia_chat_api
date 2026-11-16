@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "test": "node --test --test-concurrency=1",
     "db:init": "npx prisma init",
     "db:migrate": "npx prisma migrate dev",
     "db:push": "npx prisma db push",

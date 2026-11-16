@@ -8,6 +8,19 @@ const SYSTEM_USER_IDS = [
   '00000000-0000-0000-0000-000000000001'
 ];
 
+/**
+ * Đồng bộ trạng thái "đã đọc" sang mọi thiết bị khác của cùng người dùng
+ * (điện thoại / máy tính bảng / máy tính) để tự xoá thông báo cũ và số chưa đọc trên biểu tượng ứng dụng
+ */
+function emitReadSync(req, userId, conversationId, readAt) {
+  const io = req.app.get('io');
+  if (!io) return;
+  io.to(`user-${userId}`).emit('conversation-read-sync', {
+    conversationId,
+    lastReadAt: (readAt || new Date()).toISOString()
+  });
+}
+
 // Tạo cuộc trò chuyện mới (1v1 hoặc nhóm)
 const createConversation = asyncHandler(async (req, res) => {
   const { name, isGroup, memberIds, userIds, avatarUrl } = req.body;
@@ -324,6 +337,7 @@ const getMessages = asyncHandler(async (req, res) => {
 
   // Khi mở xem tin nhắn mới nhất của cuộc hội thoại, tự động đánh dấu đã đọc
   if (!beforeId && !searchQuery) {
+    const readAt = new Date();
     prisma.conversationMember
       .update({
         where: {
@@ -332,8 +346,9 @@ const getMessages = asyncHandler(async (req, res) => {
             userId: currentUserId
           }
         },
-        data: { lastReadAt: new Date() }
+        data: { lastReadAt: readAt }
       })
+      .then(() => emitReadSync(req, currentUserId, conversationId, readAt))
       .catch(() => {});
   }
 
@@ -368,6 +383,8 @@ const markConversationRead = asyncHandler(async (req, res) => {
     },
     data: { lastReadAt: now }
   });
+
+  emitReadSync(req, currentUserId, conversationId, now);
 
   res.json({ success: true, conversationId, lastReadAt: now });
 });

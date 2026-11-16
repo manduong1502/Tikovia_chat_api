@@ -325,6 +325,12 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             io.to(`user-${member.userId}`).emit('receive-message', realtimePayload);
           });
 
+          // Người gửi vừa trả lời → coi như đã đọc cuộc trò chuyện trên mọi thiết bị của họ
+          io.to(`user-${currentUserId}`).emit('conversation-read-sync', {
+            conversationId,
+            lastReadAt: now.toISOString()
+          });
+
           const senderName = newMessage.sender?.displayName || 'Người dùng';
           const isGroupMsg = conv.isGroup;
           const baseTitle = isGroupMsg ? `${conv.name || 'Nhóm chat'} (${senderName})` : senderName;
@@ -717,6 +723,8 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
               );
             }
           }, 45000);
+          // Không giữ tiến trình sống chỉ vì bộ đếm này (giúp tắt máy chủ / chạy kiểm thử nhanh gọn)
+          if (typeof ringingTimeoutId.unref === 'function') ringingTimeoutId.unref();
 
           activeCalls.set(userToCall, {
             signal: signalData,

@@ -16,6 +16,8 @@ model User {
   phone                String?
   status               String               @default("offline") // "online", "offline", "away"
   lastSeen             DateTime             @default(now())
+  // Tăng lên mỗi khi đổi mật khẩu → mọi token cũ (máy khác) lập tức mất hiệu lực
+  tokenVersion         Int                  @default(0)
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   conversations        ConversationMember[]

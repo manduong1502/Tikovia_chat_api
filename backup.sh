@@ -66,4 +66,31 @@ prune_old() {
 prune_old "$BACKUP_ROOT/db" "chattikovia_pg_*.dump"
 prune_old "$BACKUP_ROOT/uploads" "chattikovia_uploads_*.tar.gz"
 
+# 4. (Tuỳ chọn) Chép bản sao lưu ra ngoài server qua rclone (Google Drive / OneDrive / máy khác)
+#    Bật bằng cách đặt OFFSITE_REMOTE trong .env, ví dụ: OFFSITE_REMOTE=gdrive-crypt:ChatTikovia-Backups
+#    Khuyến nghị dùng remote dạng "crypt" của rclone để dữ liệu được MÃ HOÁ trước khi rời khỏi server.
+OFFSITE_REMOTE="${OFFSITE_REMOTE:-}"
+if [ -z "$OFFSITE_REMOTE" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+  OFFSITE_REMOTE="$(grep -E '^[[:space:]]*OFFSITE_REMOTE=' "$SCRIPT_DIR/.env" | tail -n1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/^"//' -e 's/"[[:space:]]*$//')"
+fi
+OFFSITE_RETENTION_DAYS=30
+RCLONE_CONFIG_FILE="${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}"
+
+if [ -n "$OFFSITE_REMOTE" ]; then
+  if command -v rclone > /dev/null 2>&1; then
+    echo "[$(date -Iseconds)] Đang chép bản sao lưu ra ngoài: $OFFSITE_REMOTE"
+    # Lỗi chép ra ngoài KHÔNG làm hỏng bản sao lưu cục bộ đã thành công
+    if rclone --config "$RCLONE_CONFIG_FILE" copy "$DB_DUMP_FILE" "$OFFSITE_REMOTE/db/" --retries 3 \
+       && rclone --config "$RCLONE_CONFIG_FILE" copy "$UPLOADS_ARCHIVE" "$OFFSITE_REMOTE/uploads/" --retries 3; then
+      rclone --config "$RCLONE_CONFIG_FILE" delete "$OFFSITE_REMOTE/db/" --min-age "${OFFSITE_RETENTION_DAYS}d" || true
+      rclone --config "$RCLONE_CONFIG_FILE" delete "$OFFSITE_REMOTE/uploads/" --min-age "${OFFSITE_RETENTION_DAYS}d" || true
+      echo "[$(date -Iseconds)] Đã chép bản sao lưu ra ngoài thành công (giữ ${OFFSITE_RETENTION_DAYS} ngày)."
+    else
+      echo "[$(date -Iseconds)] CẢNH BÁO: Chép bản sao lưu ra ngoài thất bại (bản cục bộ vẫn an toàn)." >&2
+    fi
+  else
+    echo "[$(date -Iseconds)] CẢNH BÁO: Đã đặt OFFSITE_REMOTE nhưng chưa cài rclone (sudo apt install rclone)." >&2
+  fi
+fi
+
 echo "[$(date -Iseconds)] === HOÀN TẤT SAO LƯU AN TOÀN (LƯU TRỮ TỐI ĐA $RETENTION_DAYS NGÀY) ==="
