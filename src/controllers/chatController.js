@@ -3,6 +3,11 @@ const asyncHandler = require('../utils/asyncHandler');
 const { deleteLocalFile, isValidAvatarUrl } = require('../utils/storage');
 const { sendNotificationHelper } = require('./pushController');
 
+const SYSTEM_USER_IDS = [
+  '00000000-0000-0000-0000-000000000000',
+  '00000000-0000-0000-0000-000000000001'
+];
+
 // Tạo cuộc trò chuyện mới (1v1 hoặc nhóm)
 const createConversation = asyncHandler(async (req, res) => {
   const { name, isGroup, memberIds, userIds, avatarUrl } = req.body;
@@ -13,8 +18,24 @@ const createConversation = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Danh sách thành viên không hợp lệ' });
   }
 
+  if (rawMemberIds.length > 500) {
+    return res.status(400).json({ error: 'Số lượng thành viên vượt quá giới hạn cho phép (500)' });
+  }
+
+  // Chỉ giữ lại các tài khoản người dùng thật đang tồn tại (loại bỏ ID rác và tài khoản hệ thống ảo)
+  const requestedIds = Array.from(new Set(rawMemberIds.map((id) => String(id))));
+  const existingUsers = await prisma.user.findMany({
+    where: { id: { in: requestedIds, notIn: SYSTEM_USER_IDS } },
+    select: { id: true }
+  });
+  const validMemberIds = existingUsers.map((u) => u.id).filter((id) => id !== currentUserId);
+
+  if (validMemberIds.length === 0) {
+    return res.status(400).json({ error: 'Không tìm thấy thành viên hợp lệ để tạo cuộc trò chuyện' });
+  }
+
   // Luôn bao gồm người tạo
-  const allMemberIds = Array.from(new Set([currentUserId, ...rawMemberIds]));
+  const allMemberIds = Array.from(new Set([currentUserId, ...validMemberIds]));
 
   // Nếu là chat 1v1, kiểm tra xem đã tồn tại chưa
   if (!isGroup && allMemberIds.length === 2) {
@@ -825,7 +846,16 @@ const addGroupMembers = asyncHandler(async (req, res) => {
   }
 
   const existingUserIds = new Set(conversation.members.map((m) => m.userId));
-  const newMemberIds = Array.from(new Set(rawMemberIds)).filter((id) => !existingUserIds.has(id));
+  const candidateIds = Array.from(new Set(rawMemberIds.map((id) => String(id)))).filter(
+    (id) => !existingUserIds.has(id)
+  );
+  const realUsers = candidateIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: candidateIds, notIn: SYSTEM_USER_IDS } },
+        select: { id: true }
+      })
+    : [];
+  const newMemberIds = realUsers.map((u) => u.id);
 
   if (newMemberIds.length === 0) {
     return res.status(400).json({ error: 'Tất cả thành viên được chọn đã ở trong nhóm' });
@@ -1082,7 +1112,7 @@ const updateGroupDetails = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Chỉ Trưởng nhóm mới có quyền sửa đổi thông tin nhóm' });
   }
 
-  if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
+  if (avatarUrl && avatarUrl !== conversation.avatarUrl && !isValidAvatarUrl(avatarUrl)) {
     return res.status(400).json({ error: 'Đường dẫn ảnh đại diện nhóm không hợp lệ' });
   }
 

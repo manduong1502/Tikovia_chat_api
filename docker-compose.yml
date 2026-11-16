@@ -37,7 +37,8 @@ services:
       UPLOAD_DIR: "/app/uploads"
       REDIS_URL: "redis://chattikovia-redis:6379"
       TZ: "Asia/Ho_Chi_Minh"
-    command: sh -c "npx prisma db push --accept-data-loss && (npx prisma db execute --file prisma/applyRLS.sql --schema prisma/schema.prisma || true) && npm run start"
+    # Không dùng --accept-data-loss: nếu thay đổi schema có nguy cơ xoá cột/bảng, Prisma sẽ DỪNG lại thay vì âm thầm xoá dữ liệu
+    command: sh -c "npx prisma db push --skip-generate && (npx prisma db execute --file prisma/applyRLS.sql --schema prisma/schema.prisma || true) && npm run start"
     logging:
       driver: "json-file"
       options:

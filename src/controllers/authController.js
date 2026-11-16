@@ -215,7 +215,8 @@ async function updateProfile(req, res) {
       }
       updatedData.phone = cleanPhone;
     }
-    if (avatarUrl !== undefined) {
+    // Chỉ xử lý khi ảnh đại diện thực sự thay đổi (tránh chặn nhầm ảnh cũ hợp lệ khi người dùng chỉ đổi tên/số điện thoại)
+    if (avatarUrl !== undefined && (avatarUrl || null) !== (user.avatarUrl || null)) {
       if (avatarUrl && !isValidAvatarUrl(avatarUrl)) {
         return res.status(400).json({ error: 'Đường dẫn ảnh đại diện không hợp lệ (chỉ chấp nhận HTTPS hoặc ảnh tải lên hệ thống)' });
       }

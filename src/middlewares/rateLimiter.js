@@ -1,4 +1,35 @@
+const jwt = require('jsonwebtoken');
 const { redis, isRedisReady } = require('../utils/redis');
+const { JWT_SECRET } = require('../config');
+
+/**
+ * Lấy IP thật của người dùng một cách an toàn:
+ * - Ưu tiên CF-Connecting-IP (Cloudflare Tunnel luôn ghi đè, người dùng không thể giả mạo)
+ * - Sau đó dùng req.ip (Express đã cấu hình trust proxy = 1, lấy hop cuối cùng do proxy thêm vào)
+ * - Tuyệt đối KHÔNG lấy phần tử đầu tiên của X-Forwarded-For vì kẻ tấn công tự đặt được giá trị này để né Rate Limit
+ */
+function getClientIp(req) {
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (cfIp && typeof cfIp === 'string' && cfIp.length <= 64) {
+    return cfIp.trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+/**
+ * Xác định bucket theo userId đã được XÁC THỰC chữ ký JWT (không dùng đuôi token thô vì kẻ gian có thể
+ * gửi token rác ngẫu nhiên để liên tục tạo bucket mới né giới hạn)
+ */
+function getVerifiedUserKey(req) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return 'anon';
+  try {
+    const decoded = jwt.verify(authHeader.slice(7), JWT_SECRET);
+    return decoded?.userId ? `u:${decoded.userId}` : 'anon';
+  } catch (e) {
+    return 'anon';
+  }
+}
 
 // Custom high-performance distributed rate limiter middleware with Redis (and in-memory fallback)
 const rateLimit = (options) => {
@@ -17,17 +48,25 @@ const rateLimit = (options) => {
         hits.delete(ip);
       }
     }
-  }, windowMs * 2);
+  }, windowMs * 2).unref();
 
   return async (req, res, next) => {
-    // Lấy IP của client đằng sau proxy/reverse proxy
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-    // Phân tách bucket theo từng nhân viên (dựa trên đuôi JWT token) để toàn bộ công ty dùng chung 1 mạng Wi-Fi văn phòng không bị khóa chéo nhau
-    const authHeader = req.headers['authorization'];
-    const userTokenSuffix = authHeader && authHeader.startsWith('Bearer ')
-      ? authHeader.slice(-16)
-      : 'anon';
-    const clientIdentifier = options.byIpOnly ? ip : `${ip}:${userTokenSuffix}`;
+    let clientIdentifier;
+    if (typeof options.keyGenerator === 'function') {
+      clientIdentifier = options.keyGenerator(req);
+      // Bỏ qua bộ giới hạn nếu không xác định được khoá (ví dụ: thiếu username)
+      if (!clientIdentifier) return next();
+    } else {
+      const ip = getClientIp(req);
+      if (options.byIpOnly) {
+        clientIdentifier = ip;
+      } else {
+        // Người dùng đã đăng nhập: giới hạn theo tài khoản (công ty dùng chung Wi-Fi không bị khoá chéo)
+        // Khách chưa đăng nhập / token giả: giới hạn theo IP
+        const userKey = getVerifiedUserKey(req);
+        clientIdentifier = userKey === 'anon' ? `ip:${ip}` : userKey;
+      }
+    }
     
     // Nếu Redis hoạt động, sử dụng Redis
     if (isRedisReady()) {
@@ -105,6 +144,19 @@ const messageLimiter = rateLimit({
   message: 'Tần suất thao tác quá nhanh. Vui lòng thử lại sau ít giây.'
 });
 
+// Chống dò mật khẩu phân tán (nhiều IP cùng tấn công 1 tài khoản): Tối đa 10 lần đăng nhập / 15 phút cho mỗi tài khoản
+const loginAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyPrefix: 'auth-account',
+  keyGenerator: (req) => {
+    const username = req.body?.username;
+    if (!username || typeof username !== 'string') return null;
+    return `acc:${username.trim().toLowerCase().slice(0, 50)}`;
+  },
+  message: 'Tài khoản này đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.'
+});
+
 // Route ghi log lỗi từ Client: Tách riêng bucket để không bao giờ ảnh hưởng đến việc đăng nhập
 const logLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -116,6 +168,8 @@ const logLimiter = rateLimit({
 
 module.exports = {
   authLimiter,
+  loginAccountLimiter,
   messageLimiter,
-  logLimiter
+  logLimiter,
+  getClientIp
 };

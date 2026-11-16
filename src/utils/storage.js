@@ -158,10 +158,15 @@ function isValidAvatarUrl(avatarUrl) {
   if (avatarUrl === null || avatarUrl === undefined || avatarUrl === '') return true;
   if (typeof avatarUrl !== 'string' || avatarUrl.length > 500) return false;
   const trimmed = avatarUrl.trim();
-  if (trimmed.startsWith('/api/uploads/avatars/')) {
-    const fileName = trimmed.slice('/api/uploads/avatars/'.length);
-    return /^[a-zA-Z0-9._-]+$/.test(fileName) && !fileName.startsWith('.') && !fileName.includes('..');
+  // Ảnh đại diện nội bộ: /api/uploads/avatars/<file> hoặc ảnh cũ /api/uploads/images/YYYY-MM/<file>
+  const localAvatarPattern = /^\/api\/uploads\/(?:avatars\/|images\/\d{4}-\d{2}\/)([a-zA-Z0-9_-][a-zA-Z0-9._-]*)$/;
+  const localMatch = trimmed.match(localAvatarPattern);
+  if (localMatch) {
+    const fileName = localMatch[1];
+    const ext = path.extname(fileName).toLowerCase();
+    return !fileName.includes('..') && ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif'].includes(ext);
   }
+  if (trimmed.startsWith('/api/uploads/')) return false;
   if (trimmed.startsWith('https://')) {
     try {
       const parsed = new URL(trimmed);

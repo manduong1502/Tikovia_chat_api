@@ -217,12 +217,10 @@ function normalizeNotificationIcon(icon) {
 
 function normalizeNotificationImage(imageUrl) {
   if (!imageUrl || typeof imageUrl !== 'string') return undefined;
-  const uploadsIdx = imageUrl.indexOf('/api/uploads/');
-  if (uploadsIdx !== -1) {
-    return `${PUBLIC_API_ORIGIN}${imageUrl.slice(uploadsIdx)}`;
-  }
-  if (imageUrl.startsWith('https://')) {
-    return imageUrl;
+  // Chỉ cho phép ảnh xem trước nằm trên máy chủ nội bộ (chống chèn ảnh theo dõi / tracking pixel từ bên ngoài vào màn hình khoá)
+  const match = imageUrl.match(/^\/api\/uploads\/images\/\d{4}-\d{2}\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.(?:jpe?g|png|webp|gif)$/i);
+  if (match) {
+    return `${PUBLIC_API_ORIGIN}${imageUrl}`;
   }
   return undefined;
 }
@@ -295,8 +293,9 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
       badgeCount,
       ...payload,
       icon: normalizeNotificationIcon(payload?.icon),
-      ...(normalizedImage ? { image: normalizedImage } : {})
+      image: normalizedImage
     };
+    if (!enrichedPayload.image) delete enrichedPayload.image;
     const payloadString = JSON.stringify(enrichedPayload);
 
     const isEphemeralCall = Boolean(enrichedPayload.isCall || enrichedPayload.type === 'call-ended');

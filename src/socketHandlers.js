@@ -20,6 +20,20 @@ const VALID_MESSAGE_TYPES = new Set([
 ]);
 
 const MAX_MESSAGE_LENGTH = 10000;
+const MAX_METADATA_LENGTH = 5000;
+
+// Các loại tin nhắn chỉ máy chủ được tạo (người dùng không được tự gửi qua Socket để giả mạo thông báo hệ thống)
+const SERVER_ONLY_MESSAGE_TYPES = new Set(['system']);
+// Các loại tin nhắn chứa tệp: nội dung bắt buộc là đường dẫn tệp nội bộ hoặc liên kết HTTPS
+const FILE_MESSAGE_TYPES = new Set(['image', 'file', 'voice']);
+
+function isSafeFileContent(content) {
+  if (!content || typeof content !== 'string' || content.length > 1000) return false;
+  if (content.startsWith('/api/uploads/')) {
+    return !content.includes('..');
+  }
+  return content.startsWith('https://');
+}
 
 /**
  * Helper gửi sự kiện tới tất cả thiết bị/tab của toàn bộ thành viên trong một cuộc hội thoại
@@ -182,7 +196,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
         const { conversationId, type = 'text', content, metadata, replyToId, tempId } = data;
         if (!currentUserId || !conversationId) return;
 
-        if (!VALID_MESSAGE_TYPES.has(type)) {
+        if (!VALID_MESSAGE_TYPES.has(type) || SERVER_ONLY_MESSAGE_TYPES.has(type)) {
           return socket.emit('error-response', { error: 'Loại tin nhắn không hợp lệ' });
         }
 
@@ -190,6 +204,19 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
           return socket.emit('error-response', {
             error: `Nội dung tin nhắn không được vượt quá ${MAX_MESSAGE_LENGTH} ký tự`
           });
+        }
+
+        if (FILE_MESSAGE_TYPES.has(type) && !isSafeFileContent(content)) {
+          return socket.emit('error-response', { error: 'Đường dẫn tệp đính kèm không hợp lệ' });
+        }
+
+        const metadataString = metadata
+          ? typeof metadata === 'string'
+            ? metadata
+            : JSON.stringify(metadata)
+          : null;
+        if (metadataString && metadataString.length > MAX_METADATA_LENGTH) {
+          return socket.emit('error-response', { error: 'Dữ liệu đính kèm tin nhắn quá lớn' });
         }
 
         try {
@@ -237,11 +264,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
                 senderId: currentUserId,
                 type,
                 content: content !== undefined && content !== null ? String(content) : null,
-                metadata: metadata
-                  ? typeof metadata === 'string'
-                    ? metadata
-                    : JSON.stringify(metadata)
-                  : null,
+                metadata: metadataString,
                 replyToId: safeReplyToId
               },
               include: {
@@ -347,9 +370,12 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
               member.userId,
               {
                 title: finalTitle,
-                body: pushBody,
+                body: pushBody.length > 300 ? `${pushBody.slice(0, 297)}...` : pushBody,
                 url: '/',
                 conversationId,
+                senderName,
+                ...(isGroupMsg ? { groupName: conv.name || 'Nhóm chat' } : {}),
+                ...(isMentioned ? { isMention: true } : {}),
                 tag: `conv-${conversationId}`,
                 icon: newMessage.sender?.avatarUrl || '/pwa-192x192.png',
                 ...(type === 'image' && content ? { image: String(content) } : {}),
@@ -619,7 +645,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             {
               conversationId,
               userId: currentUserId,
-              displayName: displayName || 'Thành viên',
+              displayName: String(displayName || 'Thành viên').slice(0, 50),
               isTyping: Boolean(isTyping)
             },
             currentUserId
@@ -631,22 +657,30 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
 
       // --- TÍN HIỆU CUỘC GỌI WEBRTC ---
       socket.on('call-user', async (data = {}) => {
-        const { userToCall, signalData, callerName, callerAvatar, isVideo, conversationId } = data;
-        if (!currentUserId || !userToCall || !conversationId) return;
+        const { userToCall, signalData, isVideo, conversationId } = data;
+        if (!currentUserId || !userToCall || !conversationId || userToCall === currentUserId) return;
 
         try {
-          const [isCallerMember, isReceiverMember] = await Promise.all([
+          const [isCallerMember, isReceiverMember, callerProfile] = await Promise.all([
             prisma.conversationMember.findUnique({
               where: { conversationId_userId: { conversationId, userId: currentUserId } }
             }),
             prisma.conversationMember.findUnique({
               where: { conversationId_userId: { conversationId, userId: userToCall } }
+            }),
+            prisma.user.findUnique({
+              where: { id: currentUserId },
+              select: { displayName: true, avatarUrl: true }
             })
           ]);
 
           if (!isCallerMember || !isReceiverMember) {
             return socket.emit('error-response', { error: 'Không thể thực hiện cuộc gọi ngoài phòng chat' });
           }
+
+          // Luôn lấy tên & ảnh người gọi từ CSDL (không tin dữ liệu client gửi lên để chống giả mạo danh tính người gọi)
+          const callerName = callerProfile?.displayName || 'Đồng nghiệp';
+          const callerAvatar = callerProfile?.avatarUrl || null;
 
           // Kiểm tra nếu người nhận đang bận trong một cuộc gọi khác
           let isReceiverBusy = activeCalls.has(userToCall);

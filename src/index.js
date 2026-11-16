@@ -73,8 +73,13 @@ if (!fs.existsSync(BASE_UPLOAD_DIR)) {
 app.use(
   '/api/uploads',
   (req, res, next) => {
-    const decodedPath = decodeURIComponent(req.path || '');
-    if (decodedPath.includes('..') || /(?:^|[\\/])\./.test(decodedPath)) {
+    let decodedPath = '';
+    try {
+      decodedPath = decodeURIComponent(req.path || '');
+    } catch (e) {
+      return res.status(400).json({ error: 'Đường dẫn không hợp lệ' });
+    }
+    if (decodedPath.includes('..') || decodedPath.includes('\0') || /(?:^|[\\/])\./.test(decodedPath)) {
       return res.status(403).json({ error: 'Truy cập bị từ chối' });
     }
     next();
