@@ -631,6 +631,21 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
       socket.on('typing', async (data = {}) => {
         const { conversationId, displayName, isTyping } = data;
         if (!currentUserId || !conversationId) return;
+
+        const typingPayload = {
+          conversationId,
+          userId: currentUserId,
+          displayName: String(displayName || 'Thành viên').slice(0, 50),
+          isTyping: Boolean(isTyping)
+        };
+
+        // Đường nhanh (không truy vấn CSDL): người gõ đã vào phòng chat (đã được kiểm tra thành viên lúc join-conversation)
+        // → chỉ cần phát cho những người đang mở đúng phòng này, vì chỉ họ mới hiển thị "đang gõ..."
+        if (socket.rooms && socket.rooms.has(conversationId)) {
+          socket.to(conversationId).emit('user-typing', typingPayload);
+          return;
+        }
+
         try {
           const isMember = await prisma.conversationMember.findUnique({
             where: {
@@ -643,19 +658,8 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
 
           if (!isMember) return;
 
-          await emitToConversationMembers(
-            io,
-            prisma,
-            conversationId,
-            'user-typing',
-            {
-              conversationId,
-              userId: currentUserId,
-              displayName: String(displayName || 'Thành viên').slice(0, 50),
-              isTyping: Boolean(isTyping)
-            },
-            currentUserId
-          );
+          socket.join(conversationId);
+          socket.to(conversationId).emit('user-typing', typingPayload);
         } catch (e) {
           logger.error('Lỗi socket typing:', e);
         }

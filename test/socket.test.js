@@ -23,11 +23,14 @@ function connect(userId) {
 
   const handlers = {};
   const emitted = [];
+  const rooms = new Set();
   const socket = {
     id: `sock-${userId}`,
     userId,
+    rooms,
     handshake: { headers: {} },
-    join: () => {},
+    join: (room) => rooms.add(room),
+    to: (room) => ({ emit: (ev, payload) => broadcast.push({ room, ev, payload, via: 'socket' }) }),
     emit: (ev, payload) => emitted.push({ ev, payload }),
     on(ev, listener) {
       handlers[ev] = listener;
@@ -103,4 +106,24 @@ test('Gọi điện: không thể tự gọi cho chính mình', async () => {
   const { fire } = connect('A');
   await fire('call-user', { userToCall: 'A', conversationId: 'C1', signalData: {} });
   assert.equal(h.findCalls('conversationMember', 'findUnique').length, 0);
+});
+
+test('Đang gõ: người ngoài phòng không phát được tín hiệu', async () => {
+  h.setMock('conversationMember.findUnique', async () => null);
+  const { fire, broadcast } = connect('OUTSIDER');
+  await fire('typing', { conversationId: 'C1', isTyping: true });
+  assert.equal(broadcast.filter((b) => b.ev === 'user-typing').length, 0);
+});
+
+test('Đang gõ: đã vào phòng thì phát ngay, không truy vấn CSDL', async () => {
+  h.setMock('conversationMember.findUnique', async () => ({}));
+  const { fire, broadcast } = connect('A');
+  await fire('join-conversation', 'C1');
+  const queriesAfterJoin = h.findCalls('conversationMember', 'findUnique').length;
+  await fire('typing', { conversationId: 'C1', isTyping: true });
+  await fire('typing', { conversationId: 'C1', isTyping: false });
+  assert.equal(h.findCalls('conversationMember', 'findUnique').length, queriesAfterJoin, 'không thêm truy vấn nào');
+  const typingEvents = broadcast.filter((b) => b.ev === 'user-typing');
+  assert.equal(typingEvents.length, 2);
+  assert.equal(typingEvents[0].room, 'C1');
 });

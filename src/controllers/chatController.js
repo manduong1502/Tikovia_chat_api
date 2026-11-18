@@ -1006,6 +1006,14 @@ const removeGroupMember = asyncHandler(async (req, res) => {
     }
   });
 
+  // Gỡ mọi thiết bị của người vừa rời/bị mời khỏi phòng realtime của nhóm (không còn nhận tín hiệu "đang gõ...")
+  const ioForLeave = req.app.get('io');
+  if (ioForLeave) {
+    try {
+      ioForLeave.in(`user-${userId}`).socketsLeave(conversationId);
+    } catch (e) {}
+  }
+
   const remainingMembers = conversation.members
     .filter((m) => m.userId !== userId)
     .sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt));
