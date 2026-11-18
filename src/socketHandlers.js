@@ -3,7 +3,8 @@
  */
 
 const { sendNotificationHelper, isValidWebPushEndpoint } = require('./controllers/pushController');
-const { deleteLocalFile } = require('./utils/storage');
+const { deleteLocalFile, BASE_UPLOAD_DIR } = require('./utils/storage');
+const { getLocalImageSize } = require('./utils/imageSize');
 const logger = require('./utils/logger');
 
 const VALID_MESSAGE_TYPES = new Set([
@@ -219,6 +220,24 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
           return socket.emit('error-response', { error: 'Dữ liệu đính kèm tin nhắn quá lớn' });
         }
 
+        // Ảnh: máy chủ tự đọc kích thước thật và gắn vào metadata để giao diện chừa sẵn đúng khung ảnh
+        // (tránh màn hình bị nhảy khi ảnh tải xong, nhất là trên iPhone)
+        let finalMetadata = metadataString;
+        if (type === 'image') {
+          const dims = await getLocalImageSize(String(content || ''), BASE_UPLOAD_DIR);
+          if (dims) {
+            let metaObj = {};
+            try {
+              metaObj = metadataString ? JSON.parse(metadataString) : {};
+            } catch (e) {
+              metaObj = {};
+            }
+            if (metaObj && typeof metaObj === 'object' && !Array.isArray(metaObj)) {
+              finalMetadata = JSON.stringify({ ...metaObj, width: dims.width, height: dims.height });
+            }
+          }
+        }
+
         try {
           const conv = await prisma.conversation.findUnique({
             where: { id: conversationId },
@@ -264,7 +283,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
                 senderId: currentUserId,
                 type,
                 content: content !== undefined && content !== null ? String(content) : null,
-                metadata: metadataString,
+                metadata: finalMetadata,
                 replyToId: safeReplyToId
               },
               include: {

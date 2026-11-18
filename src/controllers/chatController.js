@@ -1,6 +1,7 @@
 const prisma = require('../db');
 const asyncHandler = require('../utils/asyncHandler');
-const { deleteLocalFile, isValidAvatarUrl } = require('../utils/storage');
+const { deleteLocalFile, isValidAvatarUrl, BASE_UPLOAD_DIR } = require('../utils/storage');
+const { enrichImageMessagesWithSize } = require('../utils/imageSize');
 const { sendNotificationHelper } = require('./pushController');
 
 const SYSTEM_USER_IDS = [
@@ -334,6 +335,7 @@ const getMessages = asyncHandler(async (req, res) => {
   }
 
   const messages = await prisma.message.findMany(queryOptions);
+  await enrichImageMessagesWithSize(messages, BASE_UPLOAD_DIR);
 
   // Khi mở xem tin nhắn mới nhất của cuộc hội thoại, tự động đánh dấu đã đọc
   if (!beforeId && !searchQuery) {
