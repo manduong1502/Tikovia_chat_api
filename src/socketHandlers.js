@@ -818,6 +818,16 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             io.to(sid).emit('call-accepted', signal);
           }
         }
+
+        // Tắt đổ chuông trên các thiết bị khác của chính người nhận (ví dụ: đã bắt máy trên điện thoại thì máy tính ngừng reo)
+        const receiverSockets = userSocketMap.get(currentUserId);
+        if (receiverSockets && receiverSockets.size > 1) {
+          for (const sid of receiverSockets) {
+            if (sid !== socket.id) {
+              io.to(sid).emit('call-ended-by-peer');
+            }
+          }
+        }
       });
 
       socket.on('end-call', (data = {}) => {

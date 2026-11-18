@@ -293,7 +293,7 @@ const getMessages = asyncHandler(async (req, res) => {
         : {})
     },
     take: searchQuery ? 100 : limitVal,
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     include: {
       sender: {
         select: {
