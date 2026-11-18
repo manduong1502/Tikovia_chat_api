@@ -547,6 +547,51 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             messageId,
             conversationId
           });
+
+          // Đồng thời gửi Web Push (urgency: high) đến các điện thoại đang khóa màn hình / chạy nền
+          // để Service Worker xoá ngay thông báo tin nhắn vừa bị gỡ khỏi màn hình khóa (Android & iPhone)
+          const [convInfo, recaller] = await Promise.all([
+            prisma.conversation.findUnique({
+              where: { id: conversationId },
+              select: {
+                isGroup: true,
+                name: true,
+                members: {
+                  where: { userId: { not: currentUserId }, isMuted: false },
+                  select: { userId: true }
+                }
+              }
+            }),
+            prisma.user.findUnique({
+              where: { id: currentUserId },
+              select: { displayName: true, avatarUrl: true }
+            })
+          ]);
+
+          if (convInfo?.members?.length > 0) {
+            const senderName = recaller?.displayName || 'Thành viên';
+            const pushTitle = convInfo.isGroup ? convInfo.name || 'Nhóm chat' : senderName;
+            const recallPushPayload = {
+              type: 'message-recalled',
+              messageId,
+              conversationId,
+              title: pushTitle,
+              body: `${senderName} đã thu hồi một tin nhắn`,
+              icon: recaller?.avatarUrl || '/pwa-192x192.png',
+              url: '/',
+              data: {
+                url: '/',
+                conversationId,
+                messageId,
+                type: 'message-recalled'
+              }
+            };
+            Promise.all(
+              convInfo.members.map((m) =>
+                sendNotificationHelper(m.userId, recallPushPayload, { TTL: 300, urgency: 'high' })
+              )
+            ).catch(() => {});
+          }
         } catch (e) {
           logger.error('Lỗi socket thu hồi tin nhắn:', e);
         }
@@ -742,7 +787,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
                   conversationId,
                   url: '/'
                 },
-                { TTL: 30, urgency: 'high', topic: 'incoming-call' }
+                { TTL: 30, urgency: 'high' }
               );
             }
           }, 45000);
@@ -752,6 +797,8 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
           activeCalls.set(userToCall, {
             signal: signalData,
             from: currentUserId,
+            callerSocketId: socket.id,
+            receiverSocketId: null,
             callerName,
             callerAvatar,
             isVideo: Boolean(isVideo),
@@ -777,7 +824,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
                 type: 'incoming-call'
               }
             },
-            { TTL: 60, urgency: 'high', topic: 'incoming-call' }
+            { TTL: 60, urgency: 'high' }
           );
 
           const recipientSockets = userSocketMap.get(userToCall);
@@ -786,6 +833,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
               io.to(sid).emit('incoming-call', {
                 signal: signalData,
                 from: currentUserId,
+                callerSocketId: socket.id,
                 callerName,
                 callerAvatar,
                 isVideo: Boolean(isVideo),
@@ -810,12 +858,32 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
           call.timeoutId = null;
         }
         call.accepted = true;
+        call.receiverSocketId = socket.id;
         activeCalls.set(currentUserId, call);
 
-        const callerSockets = userSocketMap.get(to);
-        if (callerSockets && callerSockets.size > 0) {
-          for (const sid of callerSockets) {
-            io.to(sid).emit('call-accepted', signal);
+        const acceptedPayload = {
+          ...(signal && typeof signal === 'object' ? signal : {}),
+          responderSocketId: socket.id,
+          from: currentUserId
+        };
+
+        if (call.callerSocketId) {
+          io.to(call.callerSocketId).emit('call-accepted', acceptedPayload);
+          // Nếu người gọi mở nhiều thiết bị khác, dọn trạng thái trên các tab phụ
+          const callerSockets = userSocketMap.get(to);
+          if (callerSockets && callerSockets.size > 1) {
+            for (const sid of callerSockets) {
+              if (sid !== call.callerSocketId) {
+                io.to(sid).emit('call-ended-by-peer');
+              }
+            }
+          }
+        } else {
+          const callerSockets = userSocketMap.get(to);
+          if (callerSockets && callerSockets.size > 0) {
+            for (const sid of callerSockets) {
+              io.to(sid).emit('call-accepted', acceptedPayload);
+            }
           }
         }
 
@@ -826,6 +894,56 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
             if (sid !== socket.id) {
               io.to(sid).emit('call-ended-by-peer');
             }
+          }
+        }
+      });
+
+      // Chuyển tiếp tín hiệu WebRTC thuần (SDP Offer / Answer & Trickle ICE Candidate) trực tiếp qua Socket.io đã xác thực
+      socket.on('webrtc-signal', (data = {}) => {
+        const { to, targetSocketId, signal } = data;
+        if (!currentUserId || !to || !signal || typeof signal !== 'object') return;
+
+        let activeCallMatch = null;
+        let resolvedSocketId = null;
+
+        for (const [receiverId, call] of activeCalls.entries()) {
+          if (call.from === currentUserId && receiverId === to) {
+            activeCallMatch = call;
+            resolvedSocketId = targetSocketId || call.receiverSocketId;
+            // Cập nhật lại callerSocketId nếu socket vừa reconnect nhanh trong cuộc gọi
+            if (call.callerSocketId !== socket.id) {
+              call.callerSocketId = socket.id;
+            }
+            break;
+          }
+          if (receiverId === currentUserId && call.from === to) {
+            activeCallMatch = call;
+            resolvedSocketId = targetSocketId || call.callerSocketId;
+            if (call.receiverSocketId !== socket.id) {
+              call.receiverSocketId = socket.id;
+            }
+            break;
+          }
+        }
+
+        // Chặn tuyệt đối việc gửi gói tin WebRTC giả mạo từ người không nằm trong cuộc gọi hiện tại
+        if (!activeCallMatch) return;
+
+        const outPayload = {
+          from: currentUserId,
+          fromSocketId: socket.id,
+          signal
+        };
+
+        if (resolvedSocketId) {
+          io.to(resolvedSocketId).emit('webrtc-signal', outPayload);
+          return;
+        }
+
+        const targetSockets = userSocketMap.get(to);
+        if (targetSockets && targetSockets.size > 0) {
+          for (const sid of targetSockets) {
+            io.to(sid).emit('webrtc-signal', outPayload);
           }
         }
       });
@@ -877,7 +995,7 @@ function setupSocketHandlers(io, prisma, userSocketMap, activeCalls) {
               conversationId: endedConversationId,
               url: '/'
             },
-            { TTL: 30, urgency: 'high', topic: 'incoming-call' }
+            { TTL: 30, urgency: 'high' }
           );
         }
       });

@@ -229,7 +229,7 @@ function normalizeNotificationImage(imageUrl) {
  * Tính nhanh tổng số tin nhắn chưa đọc + công việc đang chờ của người dùng
  * để cập nhật chính xác con số trên biểu tượng màn hình chính (iOS APNs & Android Badging API)
  */
-async function computeUserBadgeCount(userId) {
+async function computeUserBadgeCount(userId, allowZero = false) {
   try {
     const [unreadRows, pendingTasks] = await Promise.all([
       prisma.$queryRaw`
@@ -261,21 +261,19 @@ async function computeUserBadgeCount(userId) {
       })
     ]);
     const unreadMsgs = Number(unreadRows?.[0]?.totalUnread) || 0;
-    return Math.max(1, unreadMsgs + (Number(pendingTasks) || 0));
+    const total = unreadMsgs + (Number(pendingTasks) || 0);
+    return allowZero ? Math.max(0, total) : Math.max(1, total);
   } catch (e) {
-    return 1;
+    return allowZero ? 0 : 1;
   }
 }
 
 /**
- * Chuẩn hoá Topic Header theo RFC 8030 (tối đa 32 ký tự URL-safe base64) cho Apple APNs & Google FCM
+ * Chuẩn hoá Topic Header theo RFC 8030 §5.4 (chuỗi base64url hợp lệ có độ dài chia hết cho 4, tối đa 32 ký tự).
+ * Lưu ý: KHÔNG gắn Topic header vào endpoint Apple (.push.apple.com) để tránh lỗi HTTP 400 BadWebPushTopic.
  */
 function buildSafeWebPushTopic(rawTopic) {
   if (!rawTopic) return undefined;
-  const cleaned = String(rawTopic).replace(/[^A-Za-z0-9\-_]/g, '');
-  if (cleaned.length > 0 && cleaned.length <= 32) {
-    return cleaned;
-  }
   return crypto.createHash('sha256').update(String(rawTopic)).digest('base64url').slice(0, 32);
 }
 
@@ -295,8 +293,11 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
       return { sent: 0, total: 0, errors: [] };
     }
 
+    const allowZeroBadge = payload?.type === 'message-recalled';
     const badgeCount =
-      payload?.badgeCount !== undefined ? payload.badgeCount : await computeUserBadgeCount(userId);
+      payload?.badgeCount !== undefined
+        ? payload.badgeCount
+        : await computeUserBadgeCount(userId, allowZeroBadge);
     const normalizedImage = normalizeNotificationImage(payload?.image);
 
     const enrichedPayload = {
@@ -314,14 +315,6 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
     const urgency = customOptions.urgency || 'high';
     const topic = customOptions.topic ? buildSafeWebPushTopic(customOptions.topic) : undefined;
 
-    const pushOptions = {
-      TTL: ttl,
-      urgency
-    };
-    if (topic) {
-      pushOptions.topic = topic;
-    }
-
     let sentCount = 0;
     const errors = [];
 
@@ -334,6 +327,15 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
         }
       };
 
+      const isAppleEndpoint = typeof sub.endpoint === 'string' && sub.endpoint.includes('.push.apple.com');
+      const pushOptions = {
+        TTL: ttl,
+        urgency
+      };
+      if (topic && !isAppleEndpoint) {
+        pushOptions.topic = topic;
+      }
+
       return webpush
         .sendNotification(pushSubscription, payloadString, pushOptions)
         .then(() => {
@@ -344,8 +346,13 @@ const sendNotificationHelper = async (userId, payload, customOptions = {}) => {
           const detail = err.body ? String(err.body).slice(0, 200) : err.message || 'Unknown error';
           errors.push(`HTTP ${status}: ${detail}`);
 
-          // Nếu subscription không còn hiệu lực (400 Bad Request/VapidPkHashMismatch, 401/403 VAPID mismatch, 404 Not Found, 410 Gone), xóa khỏi DB
-          if ([400, 401, 403, 404, 410].includes(status)) {
+          // Chỉ xoá subscription khi token thiết bị thực sự bị thu hồi/hết hạn (404/410) hoặc sai khoá VAPID (401/403/VapidPkHashMismatch)
+          // Tránh xoá nhầm subscription hợp lệ của iPhone nếu APNs trả 400 do header/payload tạm thời
+          const isDeadSubscription =
+            [401, 403, 404, 410].includes(status) ||
+            (status === 400 && /VapidPkHashMismatch|BadDeviceToken|Unregistered|ExpiredSubscription/i.test(detail));
+
+          if (isDeadSubscription) {
             logger.info(`[Push] Xoá subscription hết hạn/lỗi (${status}) của user ${userId}: ${detail}`);
             await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
           } else {

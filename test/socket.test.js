@@ -127,3 +127,136 @@ test('Đang gõ: đã vào phòng thì phát ngay, không truy vấn CSDL', asyn
   assert.equal(typingEvents.length, 2);
   assert.equal(typingEvents[0].room, 'C1');
 });
+
+test('Gọi điện WebRTC: chuyển tiếp SDP/ICE chính xác giữa 2 thiết bị và chặn người lạ chèn gói tin', async () => {
+  let connectionHandler;
+  const broadcast = [];
+  const io = {
+    on: (ev, cb) => {
+      if (ev === 'connection') connectionHandler = cb;
+    },
+    to: (room) => ({ emit: (ev, payload) => broadcast.push({ room, ev, payload }) }),
+    emit: () => {}
+  };
+  const userSocketMap = new Map();
+  const activeCalls = new Map();
+  setupSocketHandlers(io, h.prisma, userSocketMap, activeCalls);
+
+  const attachUser = (userId) => {
+    const handlers = {};
+    const socket = {
+      id: `sock-${userId}`,
+      userId,
+      rooms: new Set(),
+      handshake: { headers: {} },
+      join: () => {},
+      to: () => ({ emit: () => {} }),
+      emit: () => {},
+      on(ev, listener) {
+        handlers[ev] = listener;
+      }
+    };
+    connectionHandler(socket);
+    const fire = async (ev, payload) => {
+      await handlers[ev](payload);
+      await h.tick(20);
+    };
+    return { socket, fire };
+  };
+
+  h.setMock('conversationMember.findUnique', async () => ({}));
+  h.setMock('user.findUnique', async ({ where }) => ({
+    id: where.id,
+    displayName: `User ${where.id}`,
+    avatarUrl: null
+  }));
+  h.setMock('user.update', async () => ({}));
+
+  const caller = attachUser('CALLER');
+  const receiver = attachUser('RECEIVER');
+  const intruder = attachUser('INTRUDER');
+
+  await caller.fire('register-user', 'CALLER');
+  await receiver.fire('register-user', 'RECEIVER');
+  await intruder.fire('register-user', 'INTRUDER');
+
+  await caller.fire('call-user', {
+    userToCall: 'RECEIVER',
+    conversationId: 'C1',
+    isVideo: false
+  });
+  assert.ok(broadcast.some((b) => b.room === 'sock-RECEIVER' && b.ev === 'incoming-call'));
+
+  await receiver.fire('answer-call', {
+    to: 'CALLER',
+    signal: { ready: true }
+  });
+  const acceptedEvt = broadcast.find((b) => b.room === 'sock-CALLER' && b.ev === 'call-accepted');
+  assert.ok(acceptedEvt, 'người gọi nhận được tín hiệu bắt máy');
+  assert.equal(acceptedEvt.payload.responderSocketId, 'sock-RECEIVER');
+
+  // Kẻ lạ cố chèn gói WebRTC giả mạo vào cuộc gọi -> phải bị chặn hoàn toàn
+  await intruder.fire('webrtc-signal', {
+    to: 'RECEIVER',
+    signal: { type: 'offer', sdp: 'fake-sdp' }
+  });
+  assert.equal(
+    broadcast.filter((b) => b.ev === 'webrtc-signal' && b.payload?.from === 'INTRUDER').length,
+    0,
+    'chặn tuyệt đối người ngoài cuộc gọi gửi webrtc-signal'
+  );
+
+  // Người gọi gửi SDP Offer -> đến đúng sock-RECEIVER
+  await caller.fire('webrtc-signal', {
+    to: 'RECEIVER',
+    targetSocketId: 'sock-RECEIVER',
+    signal: { type: 'offer', sdp: { type: 'offer', sdp: 'v=0...' } }
+  });
+  assert.ok(
+    broadcast.some(
+      (b) => b.room === 'sock-RECEIVER' && b.ev === 'webrtc-signal' && b.payload?.signal?.type === 'offer'
+    )
+  );
+
+  // Người nghe gửi SDP Answer -> quay về đúng sock-CALLER
+  await receiver.fire('webrtc-signal', {
+    to: 'CALLER',
+    targetSocketId: 'sock-CALLER',
+    signal: { type: 'answer', sdp: { type: 'answer', sdp: 'v=0...' } }
+  });
+  assert.ok(
+    broadcast.some(
+      (b) => b.room === 'sock-CALLER' && b.ev === 'webrtc-signal' && b.payload?.signal?.type === 'answer'
+    )
+  );
+});
+
+test('Thu hồi tin nhắn: phát sự kiện thu hồi và kích hoạt Web Push xoá thông báo cho thành viên khác', async () => {
+  h.setMock('conversationMember.findUnique', async () => ({}));
+  h.setMock('conversationMember.findMany', async () => [{ userId: 'A' }, { userId: 'B' }]);
+  h.setMock('message.findUnique', async () => ({
+    id: 'MSG-1',
+    conversationId: 'C1',
+    senderId: 'A',
+    type: 'text',
+    content: 'tin nhắn nhầm'
+  }));
+  h.setMock('message.update', async () => ({}));
+  h.setMock('conversation.findUnique', async () => ({
+    id: 'C1',
+    isGroup: false,
+    name: null,
+    members: [{ userId: 'B', isMuted: false }]
+  }));
+  h.setMock('user.findUnique', async () => ({ displayName: 'Nguyễn A', avatarUrl: null }));
+  h.setMock('pushSubscription.findMany', async () => []);
+
+  const { fire, broadcast } = connect('A');
+  await fire('recall-message', { messageId: 'MSG-1', conversationId: 'C1' });
+
+  assert.ok(h.findCalls('message', 'update').length === 1);
+  // Phải truy vấn pushSubscription của người nhận B để gửi lệnh gỡ thông báo trên màn hình khóa
+  const pushQueries = h.findCalls('pushSubscription', 'findMany');
+  assert.ok(pushQueries.some((q) => q.args[0]?.where?.userId === 'B'));
+  assert.ok(broadcast.some((b) => b.ev === 'message-recalled'));
+});
